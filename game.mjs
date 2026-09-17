@@ -2,7 +2,19 @@ import { randomBytes, randomInt } from 'node:crypto';
 export const NAMES=['팽약사','구약사','방약사','철약사','동약사','석약사','두약사','조약사','사공약사','용약사'];
 export const COSTS=[2000,3000,3000,2000,1000,2500,3000,2000,4000];
 export const WORLD= {width:1600,height:900,step:4};
-export const STATS=[ [300,1.15,1],[330,1,0.9],[280,.95,1.2],[270,1.22,.85],[290,1.04,1],[340,.96,.8],[290,1.04,1.1],[300,1.08,.95],[300,1,1.1],[310,1.12,.9] ];
+export const STATS=[ [300,1,1],[330,1,0.9],[280,1,1.2],[270,1,.85],[290,1,1],[340,1,.8],[290,1,1.1],[300,1,.95],[300,1,1.1],[310,1,.9] ];
+export const WEAPONS=[
+ {visual:'red-pill',count:1,radius:62,effectDelay:0},
+ {visual:'lightning',count:1,radius:62,effectDelay:0},
+ {visual:'arrow',count:1,radius:62,effectDelay:0},
+ {visual:'small-purple',count:1,radius:62,effectDelay:0},
+ {visual:'blue-laser',count:1,radius:62,effectDelay:.45},
+ {visual:'lime-burst',count:3,radius:62,effectDelay:0,interval:.22},
+ {visual:'pink-pill',count:1,radius:62,effectDelay:0},
+ {visual:'robot-orb',count:1,radius:62,effectDelay:.5},
+ {visual:'blue-volley',count:3,radius:62,effectDelay:0,spread:2},
+ {visual:'purple-blast',count:1,radius:105,effectDelay:0}
+];
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
 const numeric=x=>typeof x==='number' && Number.isFinite(x);
 export function newTerrain(){return Array.from({length:401},(_,i)=>{let x=i*4;return Math.round(205+65*Math.sin(x/135)+32*Math.cos(x/67)+(x<240||x>1350?100:0));});}
@@ -50,7 +62,7 @@ export function start(room,now=Date.now(),random=Math.random){
  for(let i=room.turnOrder.length-1;i>0;i--){const j=Math.floor(random()*(i+1));[room.turnOrder[i],room.turnOrder[j]]=[room.turnOrder[j],room.turnOrder[i]];}
  room.turn='';nextTurn(room,now);
 }
-function damage(room,x,y,radius,amount){for(const p of alive(room)){if(p.shield>0)continue;const d=Math.hypot(p.x-x,p.y+32-y);if(d>radius+28)continue;const hit=Math.max(0,Math.round(amount*(1-d/(radius+38))));p.hp=Math.max(0,p.hp-hit);}}
+function damage(room,x,y,radius,amount,part=0,count=1){for(const p of alive(room)){if(p.shield>0)continue;const d=Math.hypot(p.x-x,p.y+32-y);if(d>radius+28)continue;const total=Math.max(0,amount*(1-d/(radius+38)));const hit=Math.round(total*(part+1)/count)-Math.round(total*part/count);p.hp=Math.max(0,p.hp-hit);}}
 function expose(room,p){if(p.shield||p.immunity)return;for(const c of room.clouds)if(c.team!==p.team&&Math.hypot(p.x-c.x,p.y+30-c.y)<=c.radius+28)p.poison=Math.max(p.poison,3);}
 function poisonCloud(room,p,s){room.clouds.push({x:s.x,y:s.y,radius:100,team:p.team,untilTurn:room.turnNumber+3});for(const q of alive(room))expose(room,q);}
 function crater(room,x,y,r){for(let i=0;i<room.terrain.length;i++){const dx=i*4-x;if(Math.abs(dx)<r){let bottom=y-Math.sqrt(r*r-dx*dx);if(y+Math.sqrt(r*r-dx*dx)>=room.terrain[i])room.terrain[i]=Math.max(0,Math.min(room.terrain[i],bottom));}}}
@@ -101,20 +113,37 @@ export function command(room,id,msg,now=Date.now()){
  const kind=msg.kind||'normal';assert(['normal','special','homing','teleport','poison'].includes(kind),'잘못된 탄입니다.');
  if(kind==='special'){assert(p.special>0,'특수탄이 없습니다.');p.special--;}
  const item={homing:0,teleport:1,poison:6}[kind];if(item!==undefined){assert(p.inventory[item]>0,'보유하지 않은 아이템입니다.');p.inventory[item]--;}
- const multi=kind==='special'&&[2,7].includes(p.character);const shots=(multi?[-5,0,5]:[0]).map(d=>trace(room,p,clamp(msg.angle+d,0,180),msg.power,kind));
+ const native=kind==='normal'||kind==='special';
+ const weapon=native?WEAPONS[p.character]:{visual:kind,count:1,radius:62,effectDelay:0};
+ const radius=weapon.radius*(kind==='special'?85/62:1);
  const multiplier=STATS[p.character][1];
- room.lastShot={id:++room.shotNumber,startedAt:now,owner:id,kind,paths:shots.map(s=>({points:s.points,hit:s.hit})),radius:kind==='special'?85:62};
- // Defer authoritative impact until all clients have animated the same paths.
- room.pending={id,kind,shots,multi,multiplier};room.phase='resolving';room.resumeAt=now+Math.min(12000,Math.max(...shots.map(s=>s.points.length))*50+350);
+ const shots=Array.from({length:weapon.count},(_,index)=>{
+  const offset=(index-(weapon.count-1)/2)*(weapon.spread||0);
+  const shot=trace(room,p,clamp(msg.angle+offset,0,180),msg.power,kind);
+  const startDelay=index*(weapon.interval||0),flightDuration=(shot.points.length-1)*.05;
+  return {...shot,index,startDelay,flightDuration,effectDelay:weapon.effectDelay,impactAt:now+(startDelay+flightDuration+weapon.effectDelay)*1000,resolved:false};
+ });
+ room.lastShot={id:++room.shotNumber,startedAt:now,owner:id,character:p.character,visual:weapon.visual,kind,
+  paths:shots.map(s=>({points:s.points,hit:s.hit,startDelay:s.startDelay,flightDuration:s.flightDuration,effectDelay:s.effectDelay})),radius};
+ room.pending={id,kind,shots,multiplier,radius,count:weapon.count};room.phase='resolving';
+ room.resumeAt=Math.max(...shots.map(s=>s.impactAt))+300;
 }
 export function tick(room,now=Date.now()){
  let changed=false;
  if(room.phase==='lobby')for(const p of room.players)changed=expireSelection(p,now)||changed;
  for(const p of room.players)if(!p.connected&&p.disconnectedAt&&now-p.disconnectedAt>45000){p.disconnectedAt=0;if(room.host===p.id)room.host=room.players.find(q=>q.connected)?.id||'';if(room.phase==='lobby'){room.players=room.players.filter(q=>q.id!==p.id);if(room.host===p.id)room.host=room.players[0]?.id||'';}else {p.hp=0;if(room.phase==='battle'&&!victory(room)&&room.turn===p.id)nextTurn(room,now);}changed=true;}
- if(room.phase==='resolving'&&now>=room.resumeAt){
-  const {id,kind,shots,multi,multiplier}=room.pending;const p=room.players.find(q=>q.id===id);
-  for(const s of shots){if(!s.hit)continue;if(kind==='teleport'){if(p.hp>0&&s.x>20&&s.x<1580&&!alive(room).some(q=>q.id!==p.id&&Math.abs(q.x-s.x)<38)){p.x=s.x;p.y=ground(room,s.x);}}else if(kind==='poison'){poisonCloud(room,p,s);}else{let radius=kind==='special'?85:62;damage(room,s.x,s.y,radius,(kind==='special'?145:105)*multiplier*(multi?.6:1));crater(room,s.x,s.y,radius*.8);}}
-  settle(room);room.pending=null;finishAction(room,p,kind==='normal'?100:kind==='special'?150:125,now);changed=true;
+ if(room.phase==='resolving'){
+  const {id,kind,shots,multiplier}=room.pending;const p=room.players.find(q=>q.id===id);
+  let impacted=false;
+  for(const s of shots){
+   if(s.resolved||now<(s.impactAt??room.resumeAt))continue;
+   s.resolved=true;changed=true;if(!s.hit)continue;impacted=true;
+   if(kind==='teleport'){if(p.hp>0&&s.x>20&&s.x<1580&&!alive(room).some(q=>q.id!==p.id&&Math.abs(q.x-s.x)<38)){p.x=s.x;p.y=ground(room,s.x);}}
+   else if(kind==='poison'){poisonCloud(room,p,s);}
+   else{const radius=room.pending.radius??(kind==='special'?85:62);damage(room,s.x,s.y,radius,(kind==='special'?145:105)*multiplier,s.index??0,room.pending.count??1);crater(room,s.x,s.y,radius*.8);}
+  }
+  if(impacted)settle(room);
+  if(now>=room.resumeAt){room.pending=null;finishAction(room,p,0,now);changed=true;}
  }
  if(room.phase==='battle'&&now>=room.deadline){const p=room.players.find(q=>q.id===room.turn);finishAction(room,p,100,now);changed=true;}
  return changed;
