@@ -17,11 +17,21 @@ export const WEAPONS=[
 ];
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
 const numeric=x=>typeof x==='number' && Number.isFinite(x);
-export function newTerrain(){return Array.from({length:401},(_,i)=>{let x=i*4;return Math.round(205+65*Math.sin(x/135)+32*Math.cos(x/67)+(x<240||x>1350?100:0));});}
+export const MAP_NAMES=['유적의 전장','중세의 성','해적의 바다','사막의 협곡','설원의 고지','우주의 전장'];
+// Server-owned height profiles. Each map has safe, separated 4:4 spawn platforms.
+const MAP_PROFILES=[
+ [[0,520],[180,520],[260,315],[365,300],[450,410],[550,410],[635,265],[730,240],[840,175],[925,275],[1040,250],[1180,340],[1260,340],[1370,510],[1600,510]],
+ [[0,420],[110,520],[205,520],[285,295],[385,295],[465,420],[570,420],[645,310],[960,310],[1020,460],[1150,460],[1230,300],[1360,350],[1420,535],[1600,535]],
+ [[0,450],[205,450],[260,260],[365,260],[420,350],[560,350],[645,215],[735,180],[760,0],[920,0],[950,175],[1040,245],[1170,245],[1250,350],[1380,450],[1600,450]],
+ [[0,510],[220,510],[310,350],[445,350],[510,260],[645,260],[735,200],[880,200],[950,170],[1000,260],[1120,260],[1190,350],[1310,350],[1400,510],[1600,510]],
+ [[0,480],[180,480],[260,320],[360,320],[420,455],[560,455],[645,265],[750,150],[840,165],[930,320],[1040,320],[1140,435],[1280,435],[1360,525],[1600,525]],
+ [[0,520],[190,520],[270,430],[375,430],[445,320],[565,320],[645,240],[725,125],[870,125],[935,245],[1050,245],[1130,380],[1250,380],[1360,490],[1600,490]]
+];
+export function newTerrain(mapId=0){const profile=MAP_PROFILES[mapId]||MAP_PROFILES[0];return Array.from({length:401},(_,i)=>{const x=i*4;let index=1;while(index<profile.length-1&&x>profile[index][0])index++;const [ax,ay]=profile[index-1],[bx,by]=profile[index];return Math.round(ay+(by-ay)*(x-ax)/(bx-ax));});}
 export function ground(room,x){return room.terrain[clamp(Math.round(x/4),0,400)];}
-export function makeRoom(code){return {code,phase:'lobby',host:'',players:[],terrain:newTerrain(),turn:'',turnOrder:[],turnNumber:0,wind:0,deadline:0,winner:'',lastShot:null,shotNumber:0,events:[],clouds:[],created:Date.now(),lastActive:Date.now(),resumeAt:0};}
+export function makeRoom(code){return {code,phase:'lobby',mapId:-1,mapName:'',host:'',players:[],terrain:newTerrain(),turn:'',turnOrder:[],turnNumber:0,wind:0,deadline:0,winner:'',lastShot:null,shotNumber:0,events:[],clouds:[],created:Date.now(),lastActive:Date.now(),resumeAt:0};}
 export function makePlayer(id,name,character,now=Date.now()){let c=clamp(Math.trunc(character||0),0,9);return {id,name:String(name||'약사').trim().slice(0,12),character:c,team:0,ready:false,selectionLocked:false,selectionAuto:false,selectionDeadline:now+30000,connected:true,hp:STATS[c][0],maxHp:STATS[c][0],x:0,y:0,energy:120,delay:0,coins:9000,inventory:Array(9).fill(0),special:3,shield:0,poison:0,hidden:0,immunity:0,nextTurnBonus:0,moveBoost:false,itemUsed:false,disconnectedAt:0};}
-export function snapshot(room,now=Date.now(),viewerId=null){const viewer=room.players.find(p=>p.id===viewerId);return {type:'state',code:room.code,phase:room.phase,host:room.host,players:room.players.map(({disconnectedAt,selectionDeadline,...rest})=>{const p={...rest,selectionSeconds:Math.max(0,(selectionDeadline-now)/1000)};return viewer&&p.hidden>0&&p.team!==viewer.team?{...p,x:0,y:0,energy:0}:p}),clouds:room.clouds,terrain:room.terrain,turn:room.turn,turnOrder:room.turnOrder.filter(id=>room.players.some(p=>p.id===id&&p.hp>0)),turnNumber:room.turnNumber,wind:room.wind,seconds:Math.max(0,(room.deadline-now)/1000),winner:room.winner,lastShot:room.lastShot&&!(viewer&&room.players.some(p=>p.id===room.lastShot.owner&&p.team!==viewer.team&&p.hidden>0))?{...room.lastShot,elapsed:(now-room.lastShot.startedAt)/1000}:null};}
+export function snapshot(room,now=Date.now(),viewerId=null){const viewer=room.players.find(p=>p.id===viewerId);return {type:'state',code:room.code,phase:room.phase,mapId:room.mapId,mapName:room.mapName,host:room.host,players:room.players.map(({disconnectedAt,selectionDeadline,...rest})=>{const p={...rest,selectionSeconds:Math.max(0,(selectionDeadline-now)/1000)};return viewer&&p.hidden>0&&p.team!==viewer.team?{...p,x:0,y:0,energy:0}:p}),clouds:room.clouds,terrain:room.terrain,turn:room.turn,turnOrder:room.turnOrder.filter(id=>room.players.some(p=>p.id===id&&p.hp>0)),turnNumber:room.turnNumber,wind:room.wind,seconds:Math.max(0,(room.deadline-now)/1000),winner:room.winner,lastShot:room.lastShot&&!(viewer&&room.players.some(p=>p.id===room.lastShot.owner&&p.team!==viewer.team&&p.hidden>0))?{...room.lastShot,elapsed:(now-room.lastShot.startedAt)/1000}:null};}
 export function newCode(){return randomBytes(4).toString('hex').slice(0,6).toUpperCase();}
 function setCharacter(p,c){p.character=c;p.maxHp=p.hp=STATS[c][0];}
 function expireSelection(p,now){
@@ -50,13 +60,13 @@ room.turn=p.id;room.turnNumber++;p.energy=Math.round(120*STATS[p.character][2]);
  if(p.hp<=0){nextTurn(room,now);return;}
  room.wind=Math.round((Math.random()*2-1)*50)/10;room.phase='battle';room.deadline=now+20000+p.nextTurnBonus;p.nextTurnBonus=0;
 }
-export function start(room,now=Date.now(),random=Math.random){
+export function start(room,now=Date.now(),random=Math.random,chooseMap=()=>randomInt(MAP_NAMES.length)){
  assert(room.phase==='lobby','대기실에서 시작할 수 있습니다.');
  assert(room.players.length>=2,'최소 2명이 필요합니다.');
  assert(room.players.every(p=>p.ready&&p.connected),'모두 준비를 눌러 주세요.');
  assert(new Set(room.players.map(p=>p.team)).size===2,'양 팀에 최소 1명씩 필요합니다.');
  assert(room.players.filter(p=>p.team===0).length===room.players.filter(p=>p.team===1).length,'양 팀 인원을 같게 맞춰 주세요.');
- room.terrain=newTerrain();room.clouds=[];room.lastShot=null;room.shotNumber=0;room.turnNumber=0;room.winner='';
+ room.mapId=chooseMap();room.mapName=MAP_NAMES[room.mapId];room.terrain=newTerrain(room.mapId);room.clouds=[];room.lastShot=null;room.shotNumber=0;room.turnNumber=0;room.winner='';
  for(let team=0;team<2;team++)room.players.filter(p=>p.team===team).forEach((p,i)=>{p.x=team===0?120+i*175:1480-i*175;p.y=ground(room,p.x);p.hp=p.maxHp;p.delay=i*10+team*5;p.special=3;p.shield=p.poison=p.hidden=p.immunity=p.nextTurnBonus=0;p.moveBoost=false;});
  room.turnOrder=room.players.map(p=>p.id);
  for(let i=room.turnOrder.length-1;i>0;i--){const j=Math.floor(random()*(i+1));[room.turnOrder[i],room.turnOrder[j]]=[room.turnOrder[j],room.turnOrder[i]];}
