@@ -109,7 +109,7 @@ export function command(room,id,msg,now=Date.now()){
   else if(msg.type==='ready'){p.selectionLocked=true;p.ready=!p.ready;}
   else if(msg.type==='buy'){const i=msg.item;assert(Number.isInteger(i)&&i>=0&&i<9,'잘못된 아이템입니다.');assert(p.coins>=COSTS[i]&&p.inventory.reduce((a,b)=>a+b,0)<4,'코인이 부족하거나 4칸이 찼습니다.');p.coins-=COSTS[i];p.inventory[i]++;p.ready=false;}
   else if(msg.type==='refund'){const i=msg.item;assert(Number.isInteger(i)&&p.inventory[i]>0,'보유하지 않은 아이템입니다.');p.inventory[i]--;p.coins+=COSTS[i];p.ready=false;}
-  else if(msg.type==='start'){assert(id===room.host,'방장만 시작할 수 있습니다.');room.destructible=msg.kind==='ruins-destructible';if(msg.kind==='ruins-original'||room.destructible)start(room,now,Math.random,()=>6);else start(room,now);}
+  else if(msg.type==='start'){assert(id===room.host,'방장만 시작할 수 있습니다.');room.fastShots=msg.kind==='ruins-fast';room.destructible=msg.kind==='ruins-destructible'||room.fastShots;if(msg.kind==='ruins-original'||room.destructible)start(room,now,Math.random,()=>6);else start(room,now);}
   else throw new Error('대기실에서 사용할 수 없는 명령입니다.');return;
  }
  assert(room.phase==='battle'&&room.turn===id&&p.hp>0,'현재 자신의 턴이 아닙니다.');
@@ -134,7 +134,7 @@ export function command(room,id,msg,now=Date.now()){
  const shots=Array.from({length:weapon.count},(_,index)=>{
   const offset=(index-(weapon.count-1)/2)*(weapon.spread||0);
   const shot=trace(room,p,clamp(msg.angle+offset,0,180),msg.power,kind);
-  const startDelay=index*(weapon.interval||0),flightDuration=(shot.points.length-1)*.05;
+  const startDelay=index*(weapon.interval||0),flightDuration=(shot.points.length-1)*.05/(room.fastShots?2:1);
   return {...shot,index,startDelay,flightDuration,effectDelay:weapon.effectDelay,impactAt:now+(startDelay+flightDuration+weapon.effectDelay)*1000,resolved:false};
  });
  room.lastShot={id:++room.shotNumber,startedAt:now,owner:id,character:p.character,visual:weapon.visual,kind,
