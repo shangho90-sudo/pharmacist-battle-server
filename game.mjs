@@ -17,7 +17,7 @@ export const WEAPONS=[
 ];
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
 const numeric=x=>typeof x==='number' && Number.isFinite(x);
-export const MAP_NAMES=['유적의 전장','중세의 성','해적의 바다','사막의 협곡','설원의 고지','우주의 전장'];
+export const MAP_NAMES=['유적의 전장','중세의 성','해적의 바다','사막의 협곡','설원의 고지','우주의 전장','유적의 전장 · 원본'];
 // Server-owned height profiles. Each map has safe, separated 4:4 spawn platforms.
 const MAP_PROFILES=[
  [[0,520],[180,520],[260,315],[365,300],[450,410],[550,410],[635,265],[730,240],[840,175],[925,275],[1040,250],[1180,340],[1260,340],[1370,510],[1600,510]],
@@ -27,6 +27,10 @@ const MAP_PROFILES=[
  [[0,480],[180,480],[260,320],[360,320],[420,455],[560,455],[645,265],[750,150],[840,165],[930,320],[1040,320],[1140,435],[1280,435],[1360,525],[1600,525]],
  [[0,520],[190,520],[270,430],[375,430],[445,320],[565,320],[645,240],[725,125],[870,125],[935,245],[1050,245],[1130,380],[1250,380],[1360,490],[1600,490]]
 ];
+// Unmodified reference artwork: foreground top edges converted to world coordinates.
+const RUINS_SOURCE_PROFILE=[[0,228],[130,231],[198,236],[216,244],[220,400],[252,409],[288,421],[330,430],[338,539],[368,550],[432,558],[438,494],[507,490],[583,489],[648,498],[656,579],[727,586],[774,580],[780,568],[847,565],[918,571],[930,770],[1045,773],[1051,662],[1110,656],[1207,660],[1218,696],[1314,696],[1322,658],[1414,657],[1418,615],[1424,496],[1490,489],[1530,491],[1536,322],[1590,317],[1677,317],[1774,318]];
+MAP_PROFILES.push(RUINS_SOURCE_PROFILE.map(([x,y])=>[x/1774*1600,(887-y)/887*900]));
+
 export function newTerrain(mapId=0){const profile=MAP_PROFILES[mapId]||MAP_PROFILES[0];return Array.from({length:401},(_,i)=>{const x=i*4;let index=1;while(index<profile.length-1&&x>profile[index][0])index++;const [ax,ay]=profile[index-1],[bx,by]=profile[index];return Math.round(ay+(by-ay)*(x-ax)/(bx-ax));});}
 export function ground(room,x){return room.terrain[clamp(Math.round(x/4),0,400)];}
 export function makeRoom(code){return {code,phase:'lobby',mapId:-1,mapName:'',host:'',players:[],terrain:newTerrain(),turn:'',turnOrder:[],turnNumber:0,wind:0,deadline:0,winner:'',lastShot:null,shotNumber:0,events:[],clouds:[],created:Date.now(),lastActive:Date.now(),resumeAt:0};}
@@ -60,14 +64,14 @@ room.turn=p.id;room.turnNumber++;p.energy=Math.round(120*STATS[p.character][2]);
  if(p.hp<=0){nextTurn(room,now);return;}
  room.wind=Math.round((Math.random()*2-1)*50)/10;room.phase='battle';room.deadline=now+20000+p.nextTurnBonus;p.nextTurnBonus=0;
 }
-export function start(room,now=Date.now(),random=Math.random,chooseMap=()=>randomInt(MAP_NAMES.length)){
+export function start(room,now=Date.now(),random=Math.random,chooseMap=()=>randomInt(6)){
  assert(room.phase==='lobby','대기실에서 시작할 수 있습니다.');
  assert(room.players.length>=2,'최소 2명이 필요합니다.');
  assert(room.players.every(p=>p.ready&&p.connected),'모두 준비를 눌러 주세요.');
  assert(new Set(room.players.map(p=>p.team)).size===2,'양 팀에 최소 1명씩 필요합니다.');
  assert(room.players.filter(p=>p.team===0).length===room.players.filter(p=>p.team===1).length,'양 팀 인원을 같게 맞춰 주세요.');
  room.mapId=chooseMap();room.mapName=MAP_NAMES[room.mapId];room.terrain=newTerrain(room.mapId);room.clouds=[];room.lastShot=null;room.shotNumber=0;room.turnNumber=0;room.winner='';
- for(let team=0;team<2;team++)room.players.filter(p=>p.team===team).forEach((p,i)=>{p.x=team===0?120+i*175:1480-i*175;p.y=ground(room,p.x);p.hp=p.maxHp;p.delay=i*10+team*5;p.special=3;p.shield=p.poison=p.hidden=p.immunity=p.nextTurnBonus=0;p.moveBoost=false;});
+ for(let team=0;team<2;team++)room.players.filter(p=>p.team===team).forEach((p,i)=>{p.x=room.mapId===6?[[110,255,490,750],[1490,1320,1220,1020]][team][i]:(team===0?120+i*175:1480-i*175);p.y=ground(room,p.x);p.hp=p.maxHp;p.delay=i*10+team*5;p.special=3;p.shield=p.poison=p.hidden=p.immunity=p.nextTurnBonus=0;p.moveBoost=false;});
  room.turnOrder=room.players.map(p=>p.id);
  for(let i=room.turnOrder.length-1;i>0;i--){const j=Math.floor(random()*(i+1));[room.turnOrder[i],room.turnOrder[j]]=[room.turnOrder[j],room.turnOrder[i]];}
  room.turn='';nextTurn(room,now);
@@ -75,7 +79,7 @@ export function start(room,now=Date.now(),random=Math.random,chooseMap=()=>rando
 function damage(room,x,y,radius,amount,part=0,count=1){for(const p of alive(room)){if(p.shield>0)continue;const d=Math.hypot(p.x-x,p.y+32-y);if(d>radius+28)continue;const total=Math.max(0,amount*(1-d/(radius+38)));const hit=Math.round(total*(part+1)/count)-Math.round(total*part/count);p.hp=Math.max(0,p.hp-hit);}}
 function expose(room,p){if(p.shield||p.immunity)return;for(const c of room.clouds)if(c.team!==p.team&&Math.hypot(p.x-c.x,p.y+30-c.y)<=c.radius+28)p.poison=Math.max(p.poison,3);}
 function poisonCloud(room,p,s){room.clouds.push({x:s.x,y:s.y,radius:100,team:p.team,untilTurn:room.turnNumber+3});for(const q of alive(room))expose(room,q);}
-function crater(room,x,y,r){for(let i=0;i<room.terrain.length;i++){const dx=i*4-x;if(Math.abs(dx)<r){let bottom=y-Math.sqrt(r*r-dx*dx);if(y+Math.sqrt(r*r-dx*dx)>=room.terrain[i])room.terrain[i]=Math.max(0,Math.min(room.terrain[i],bottom));}}}
+function crater(room,x,y,r){if(room.mapId===6)return;for(let i=0;i<room.terrain.length;i++){const dx=i*4-x;if(Math.abs(dx)<r){let bottom=y-Math.sqrt(r*r-dx*dx);if(y+Math.sqrt(r*r-dx*dx)>=room.terrain[i])room.terrain[i]=Math.max(0,Math.min(room.terrain[i],bottom));}}}
 export function trace(room,p,angle,power,kind='normal'){
  let x=p.x,y=p.y+55;const speed=160+power*7.2,rad=angle*Math.PI/180;let vx=Math.cos(rad)*speed,vy=Math.sin(rad)*speed;const dt=1/60,points=[{x,y}];let hit=false;
  for(let i=0;i<1200;i++){
@@ -105,7 +109,7 @@ export function command(room,id,msg,now=Date.now()){
   else if(msg.type==='ready'){p.selectionLocked=true;p.ready=!p.ready;}
   else if(msg.type==='buy'){const i=msg.item;assert(Number.isInteger(i)&&i>=0&&i<9,'잘못된 아이템입니다.');assert(p.coins>=COSTS[i]&&p.inventory.reduce((a,b)=>a+b,0)<4,'코인이 부족하거나 4칸이 찼습니다.');p.coins-=COSTS[i];p.inventory[i]++;p.ready=false;}
   else if(msg.type==='refund'){const i=msg.item;assert(Number.isInteger(i)&&p.inventory[i]>0,'보유하지 않은 아이템입니다.');p.inventory[i]--;p.coins+=COSTS[i];p.ready=false;}
-  else if(msg.type==='start'){assert(id===room.host,'방장만 시작할 수 있습니다.');start(room,now);}
+  else if(msg.type==='start'){assert(id===room.host,'방장만 시작할 수 있습니다.');if(msg.kind==='ruins-original')start(room,now,Math.random,()=>6);else start(room,now);}
   else throw new Error('대기실에서 사용할 수 없는 명령입니다.');return;
  }
  assert(room.phase==='battle'&&room.turn===id&&p.hp>0,'현재 자신의 턴이 아닙니다.');
