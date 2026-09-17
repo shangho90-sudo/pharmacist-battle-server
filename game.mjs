@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomInt } from 'node:crypto';
 export const NAMES=['팽약사','구약사','방약사','철약사','동약사','석약사','두약사','조약사','사공약사','용약사'];
 export const COSTS=[2000,3500,2500,3000,2500,4000,3000,3000,4500];
 export const WORLD= {width:1600,height:900,step:4};
@@ -8,9 +8,14 @@ const numeric=x=>typeof x==='number' && Number.isFinite(x);
 export function newTerrain(){return Array.from({length:401},(_,i)=>{let x=i*4;return Math.round(205+65*Math.sin(x/135)+32*Math.cos(x/67)+(x<240||x>1350?100:0));});}
 export function ground(room,x){return room.terrain[clamp(Math.round(x/4),0,400)];}
 export function makeRoom(code){return {code,phase:'lobby',host:'',players:[],terrain:newTerrain(),turn:'',turnNumber:0,wind:0,deadline:0,winner:'',lastShot:null,shotNumber:0,events:[],created:Date.now(),lastActive:Date.now(),resumeAt:0};}
-export function makePlayer(id,name,character){let c=clamp(Math.trunc(character||0),0,9);return {id,name:String(name||'약사').trim().slice(0,12),character:c,team:0,ready:false,connected:true,hp:STATS[c][0],maxHp:STATS[c][0],x:0,y:0,energy:120,delay:0,coins:6000,inventory:Array(9).fill(0),special:3,shield:0,poison:0,hidden:0,itemUsed:false,disconnectedAt:0};}
-export function snapshot(room,now=Date.now(),viewerId=null){const viewer=room.players.find(p=>p.id===viewerId);return {type:'state',code:room.code,phase:room.phase,host:room.host,players:room.players.map(({disconnectedAt,...p})=>viewer&&p.hidden>0&&p.team!==viewer.team?{...p,x:0,y:0,energy:0}:p),terrain:room.terrain,turn:room.turn,turnNumber:room.turnNumber,wind:room.wind,seconds:Math.max(0,(room.deadline-now)/1000),winner:room.winner,lastShot:room.lastShot?{...room.lastShot,elapsed:(now-room.lastShot.startedAt)/1000}:null};}
+export function makePlayer(id,name,character,now=Date.now()){let c=clamp(Math.trunc(character||0),0,9);return {id,name:String(name||'약사').trim().slice(0,12),character:c,team:0,ready:false,selectionLocked:false,selectionAuto:false,selectionDeadline:now+30000,connected:true,hp:STATS[c][0],maxHp:STATS[c][0],x:0,y:0,energy:120,delay:0,coins:6000,inventory:Array(9).fill(0),special:3,shield:0,poison:0,hidden:0,itemUsed:false,disconnectedAt:0};}
+export function snapshot(room,now=Date.now(),viewerId=null){const viewer=room.players.find(p=>p.id===viewerId);return {type:'state',code:room.code,phase:room.phase,host:room.host,players:room.players.map(({disconnectedAt,selectionDeadline,...rest})=>{const p={...rest,selectionSeconds:Math.max(0,(selectionDeadline-now)/1000)};return viewer&&p.hidden>0&&p.team!==viewer.team?{...p,x:0,y:0,energy:0}:p}),terrain:room.terrain,turn:room.turn,turnNumber:room.turnNumber,wind:room.wind,seconds:Math.max(0,(room.deadline-now)/1000),winner:room.winner,lastShot:room.lastShot?{...room.lastShot,elapsed:(now-room.lastShot.startedAt)/1000}:null};}
 export function newCode(){return randomBytes(4).toString('hex').slice(0,6).toUpperCase();}
+function setCharacter(p,c){p.character=c;p.maxHp=p.hp=STATS[c][0];}
+function expireSelection(p,now){
+ if(p.selectionLocked||now<p.selectionDeadline)return false;
+ setCharacter(p,randomInt(NAMES.length));p.selectionLocked=true;p.selectionAuto=true;return true;
+}
 function assert(ok,message){if(!ok)throw new Error(message);}
 function alive(room){return room.players.filter(p=>p.hp>0);}
 function settle(room){for(const p of room.players){if(p.hp<=0)continue;let y=ground(room,p.x);let fall=p.y-y;p.y=y;if(fall>95)p.hp=Math.max(0,p.hp-Math.floor((fall-95)*.35));if(y<8)p.hp=0;}}
@@ -52,11 +57,13 @@ function finishAction(room,p,delay,now){p.delay+=delay;if(!victory(room))nextTur
 export function command(room,id,msg,now=Date.now()){
  const p=room.players.find(p=>p.id===id);assert(p,'플레이어를 찾을 수 없습니다.');room.lastActive=now;
  if(msg.type==='leave'){p.hp=0;p.connected=false;if(room.host===id)room.host=room.players.find(q=>q.id!==id&&q.connected)?.id||'';if(room.phase==='lobby'){room.players=room.players.filter(q=>q.id!==id);if(room.host===id)room.host=room.players[0]?.id||'';}else if(room.phase!=='finished'){if(!victory(room)&&room.turn===id)nextTurn(room,now);}return;}
- if(msg.type==='rematch'){assert(id===room.host&&room.phase==='finished','방장만 재대결을 시작할 수 있습니다.');room.players=room.players.filter(q=>q.connected);room.phase='lobby';for(const q of room.players){q.ready=false;q.coins=6000;q.inventory.fill(0);}return;}
+ if(msg.type==='rematch'){assert(id===room.host&&room.phase==='finished','방장만 재대결을 시작할 수 있습니다.');room.players=room.players.filter(q=>q.connected);room.phase='lobby';for(const q of room.players){q.ready=false;q.selectionLocked=false;q.selectionAuto=false;q.selectionDeadline=now+30000;q.coins=6000;q.inventory.fill(0);}return;}
  if(room.phase==='lobby'){
-  if(msg.type==='select'){assert(Number.isInteger(msg.character)&&msg.character>=0&&msg.character<10,'잘못된 캐릭터입니다.');p.character=msg.character;p.maxHp=p.hp=STATS[p.character][0];p.ready=false;}
+  expireSelection(p,now);
+  if(msg.type==='select'){assert(!p.selectionLocked,'캐릭터 선택이 확정되었습니다.');assert(Number.isInteger(msg.character)&&msg.character>=0&&msg.character<10,'잘못된 캐릭터입니다.');setCharacter(p,msg.character);p.ready=false;}
   else if(msg.type==='team'){assert(msg.team===0||msg.team===1,'잘못된 팀입니다.');assert(room.players.filter(q=>q.id!==id&&q.team===msg.team).length<4,'한 팀은 최대 4명입니다.');p.team=msg.team;p.ready=false;}
-  else if(msg.type==='ready')p.ready=!p.ready;
+  else if(msg.type==='confirm'){assert(!p.selectionLocked,'캐릭터 선택이 확정되었습니다.');p.selectionLocked=true;}
+  else if(msg.type==='ready'){p.selectionLocked=true;p.ready=!p.ready;}
   else if(msg.type==='buy'){const i=msg.item;assert(Number.isInteger(i)&&i>=0&&i<9,'잘못된 아이템입니다.');assert(p.coins>=COSTS[i]&&p.inventory.reduce((a,b)=>a+b,0)<4,'코인이 부족하거나 4칸이 찼습니다.');p.coins-=COSTS[i];p.inventory[i]++;p.ready=false;}
   else if(msg.type==='refund'){const i=msg.item;assert(Number.isInteger(i)&&p.inventory[i]>0,'보유하지 않은 아이템입니다.');p.inventory[i]--;p.coins+=COSTS[i];p.ready=false;}
   else if(msg.type==='start'){assert(id===room.host,'방장만 시작할 수 있습니다.');start(room,now);}
@@ -85,6 +92,7 @@ export function command(room,id,msg,now=Date.now()){
 }
 export function tick(room,now=Date.now()){
  let changed=false;
+ if(room.phase==='lobby')for(const p of room.players)changed=expireSelection(p,now)||changed;
  for(const p of room.players)if(!p.connected&&p.disconnectedAt&&now-p.disconnectedAt>45000){p.disconnectedAt=0;if(room.host===p.id)room.host=room.players.find(q=>q.connected)?.id||'';if(room.phase==='lobby'){room.players=room.players.filter(q=>q.id!==p.id);if(room.host===p.id)room.host=room.players[0]?.id||'';}else {p.hp=0;if(room.phase==='battle'&&!victory(room)&&room.turn===p.id)nextTurn(room,now);}changed=true;}
  if(room.phase==='resolving'&&now>=room.resumeAt){
   const {id,kind,shots,multi,multiplier}=room.pending;const p=room.players.find(q=>q.id===id);
