@@ -17,7 +17,7 @@ export const WEAPONS=[
 ];
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
 const numeric=x=>typeof x==='number' && Number.isFinite(x);
-export const MAP_NAMES=['유적의 전장','중세의 성','해적의 바다','사막의 협곡','설원의 고지','우주의 전장','유적의 전장 · 원본'];
+export const MAP_NAMES=['유적의 전장','중세의 성','해적의 바다','사막의 협곡','설원의 고지','우주의 전장','유적의 전장 · 원본','설원의 고지 · 원본'];
 // Server-owned height profiles. Each map has safe, separated 4:4 spawn platforms.
 const MAP_PROFILES=[
  [[0,520],[180,520],[260,315],[365,300],[450,410],[550,410],[635,265],[730,240],[840,175],[925,275],[1040,250],[1180,340],[1260,340],[1370,510],[1600,510]],
@@ -31,11 +31,15 @@ const MAP_PROFILES=[
 const RUINS_SOURCE_PROFILE=[[0,228],[130,231],[198,236],[216,244],[220,400],[252,409],[288,421],[330,430],[338,539],[368,550],[432,558],[438,494],[507,490],[583,489],[648,498],[656,579],[727,586],[774,580],[780,568],[847,565],[918,571],[930,770],[1045,773],[1051,662],[1110,656],[1207,660],[1218,696],[1314,696],[1322,658],[1414,657],[1418,615],[1424,496],[1490,489],[1530,491],[1536,322],[1590,317],[1677,317],[1774,318]];
 MAP_PROFILES.push(RUINS_SOURCE_PROFILE.map(([x,y])=>[x/1774*1600,(887-y)/887*900]));
 
+const SNOW_SOURCE_PROFILE=[[0, 323], [110, 322], [200, 320], [325, 325], [335, 515], [395, 516], [418, 540], [525, 541], [540, 444], [595, 438], [678, 443], [690, 778], [711, 788], [740, 900], [925, 900], [940, 610], [989, 606], [996, 448], [1088, 441], [1125, 401], [1228, 402], [1235, 535], [1315, 530], [1326, 321], [1435, 314], [1520, 321], [1600, 337], [1672, 340]];
+MAP_PROFILES.push(SNOW_SOURCE_PROFILE.map(([x,y])=>[x/1672*1600,(941-y)/941*900]));
+export function chooseOriginalMap(random=Math.random){return random()<.5?6:7;}
+
 export function newTerrain(mapId=0){const profile=MAP_PROFILES[mapId]||MAP_PROFILES[0];return Array.from({length:401},(_,i)=>{const x=i*4;let index=1;while(index<profile.length-1&&x>profile[index][0])index++;const [ax,ay]=profile[index-1],[bx,by]=profile[index];return Math.round(ay+(by-ay)*(x-ax)/(bx-ax));});}
 export function ground(room,x){return room.terrain[clamp(Math.round(x/4),0,400)];}
 export function makeRoom(code){return {code,phase:'lobby',mapId:-1,mapName:'',host:'',players:[],terrain:newTerrain(),turn:'',turnOrder:[],turnNumber:0,wind:0,deadline:0,winner:'',lastShot:null,shotNumber:0,events:[],clouds:[],created:Date.now(),lastActive:Date.now(),resumeAt:0};}
 export function makePlayer(id,name,character,now=Date.now()){let c=clamp(Math.trunc(character||0),0,9);return {id,name:String(name||'약사').trim().slice(0,12),character:c,team:0,ready:false,selectionLocked:false,selectionAuto:false,selectionDeadline:now+30000,connected:true,hp:STATS[c][0],maxHp:STATS[c][0],x:0,y:0,energy:120,delay:0,coins:9000,inventory:Array(9).fill(0),special:3,shield:0,poison:0,hidden:0,immunity:0,nextTurnBonus:0,moveBoost:false,itemUsed:false,disconnectedAt:0};}
-export function snapshot(room,now=Date.now(),viewerId=null){const viewer=room.players.find(p=>p.id===viewerId);return {type:'state',code:room.code,phase:room.phase,mapId:room.mapId,mapName:room.mapName,host:room.host,players:room.players.map(({disconnectedAt,selectionDeadline,...rest})=>{const p={...rest,selectionSeconds:Math.max(0,(selectionDeadline-now)/1000)};return viewer&&p.hidden>0&&p.team!==viewer.team?{...p,x:0,y:0,energy:0}:p}),clouds:room.clouds,terrain:room.terrain,baseTerrain:room.mapId===6?newTerrain(6):null,turn:room.turn,turnOrder:room.turnOrder.filter(id=>room.players.some(p=>p.id===id&&p.hp>0)),turnNumber:room.turnNumber,wind:room.wind,seconds:Math.max(0,(room.deadline-now)/1000),winner:room.winner,lastShot:room.lastShot&&!(viewer&&room.players.some(p=>p.id===room.lastShot.owner&&p.team!==viewer.team&&p.hidden>0))?{...room.lastShot,elapsed:(now-room.lastShot.startedAt)/1000}:null};}
+export function snapshot(room,now=Date.now(),viewerId=null){const viewer=room.players.find(p=>p.id===viewerId);return {type:'state',code:room.code,phase:room.phase,mapId:room.mapId,mapName:room.mapName,host:room.host,players:room.players.map(({disconnectedAt,selectionDeadline,...rest})=>{const p={...rest,selectionSeconds:Math.max(0,(selectionDeadline-now)/1000)};return viewer&&p.hidden>0&&p.team!==viewer.team?{...p,x:0,y:0,energy:0}:p}),clouds:room.clouds,terrain:room.terrain,baseTerrain:room.mapId>=6?newTerrain(room.mapId):null,turn:room.turn,turnOrder:room.turnOrder.filter(id=>room.players.some(p=>p.id===id&&p.hp>0)),turnNumber:room.turnNumber,wind:room.wind,seconds:Math.max(0,(room.deadline-now)/1000),winner:room.winner,lastShot:room.lastShot&&!(viewer&&room.players.some(p=>p.id===room.lastShot.owner&&p.team!==viewer.team&&p.hidden>0))?{...room.lastShot,elapsed:(now-room.lastShot.startedAt)/1000}:null};}
 export function newCode(){return randomBytes(4).toString('hex').slice(0,6).toUpperCase();}
 function setCharacter(p,c){p.character=c;p.maxHp=p.hp=STATS[c][0];}
 function expireSelection(p,now){
@@ -71,7 +75,7 @@ export function start(room,now=Date.now(),random=Math.random,chooseMap=()=>rando
  assert(new Set(room.players.map(p=>p.team)).size===2,'양 팀에 최소 1명씩 필요합니다.');
  assert(room.players.filter(p=>p.team===0).length===room.players.filter(p=>p.team===1).length,'양 팀 인원을 같게 맞춰 주세요.');
  room.mapId=chooseMap();room.mapName=MAP_NAMES[room.mapId];room.terrain=newTerrain(room.mapId);room.clouds=[];room.lastShot=null;room.shotNumber=0;room.turnNumber=0;room.winner='';
- for(let team=0;team<2;team++)room.players.filter(p=>p.team===team).forEach((p,i)=>{p.x=room.mapId===6?[[110,255,490,750],[1490,1320,1220,1020]][team][i]:(team===0?120+i*175:1480-i*175);p.y=ground(room,p.x);p.hp=p.maxHp;p.delay=i*10+team*5;p.special=3;p.shield=p.poison=p.hidden=p.immunity=p.nextTurnBonus=0;p.moveBoost=false;});
+ for(let team=0;team<2;team++)room.players.filter(p=>p.team===team).forEach((p,i)=>{p.x=room.mapId===7?[[90,250,440,580],[1510,1360,1120,1010]][team][i]:room.mapId===6?[[110,255,490,750],[1490,1320,1220,1020]][team][i]:(team===0?120+i*175:1480-i*175);p.y=ground(room,p.x);p.hp=p.maxHp;p.delay=i*10+team*5;p.special=3;p.shield=p.poison=p.hidden=p.immunity=p.nextTurnBonus=0;p.moveBoost=false;});
  room.turnOrder=room.players.map(p=>p.id);
  for(let i=room.turnOrder.length-1;i>0;i--){const j=Math.floor(random()*(i+1));[room.turnOrder[i],room.turnOrder[j]]=[room.turnOrder[j],room.turnOrder[i]];}
  room.turn='';nextTurn(room,now);
@@ -109,7 +113,7 @@ export function command(room,id,msg,now=Date.now()){
   else if(msg.type==='ready'){p.selectionLocked=true;p.ready=!p.ready;}
   else if(msg.type==='buy'){const i=msg.item;assert(Number.isInteger(i)&&i>=0&&i<9,'잘못된 아이템입니다.');assert(p.coins>=COSTS[i]&&p.inventory.reduce((a,b)=>a+b,0)<4,'코인이 부족하거나 4칸이 찼습니다.');p.coins-=COSTS[i];p.inventory[i]++;p.ready=false;}
   else if(msg.type==='refund'){const i=msg.item;assert(Number.isInteger(i)&&p.inventory[i]>0,'보유하지 않은 아이템입니다.');p.inventory[i]--;p.coins+=COSTS[i];p.ready=false;}
-  else if(msg.type==='start'){assert(id===room.host,'방장만 시작할 수 있습니다.');room.fastShots=msg.kind==='ruins-fast';room.destructible=msg.kind==='ruins-destructible'||room.fastShots;if(msg.kind==='ruins-original'||room.destructible)start(room,now,Math.random,()=>6);else start(room,now);}
+  else if(msg.type==='start'){assert(id===room.host,'방장만 시작할 수 있습니다.');room.fastShots=msg.kind==='ruins-fast'||msg.kind==='original-random-fast';room.destructible=msg.kind==='ruins-destructible'||room.fastShots;if(msg.kind==='original-random-fast')start(room,now,Math.random,()=>chooseOriginalMap());else if(msg.kind==='ruins-original'||room.destructible)start(room,now,Math.random,()=>6);else start(room,now);}
   else throw new Error('대기실에서 사용할 수 없는 명령입니다.');return;
  }
  assert(room.phase==='battle'&&room.turn===id&&p.hp>0,'현재 자신의 턴이 아닙니다.');
