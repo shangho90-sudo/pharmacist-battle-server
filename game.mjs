@@ -39,7 +39,7 @@ export function newTerrain(mapId=0){const profile=MAP_PROFILES[mapId]||MAP_PROFI
 export function ground(room,x){return room.terrain[clamp(Math.round(x/4),0,400)];}
 export function makeRoom(code){return {code,phase:'lobby',mapId:-1,mapName:'',host:'',players:[],terrain:newTerrain(),turn:'',turnOrder:[],turnNumber:0,wind:0,deadline:0,winner:'',lastShot:null,shotNumber:0,events:[],clouds:[],created:Date.now(),lastActive:Date.now(),resumeAt:0};}
 export function makePlayer(id,name,character,now=Date.now()){let c=clamp(Math.trunc(character||0),0,9);return {id,name:String(name||'약사').trim().slice(0,12),character:c,team:0,ready:false,selectionLocked:false,selectionAuto:false,selectionDeadline:now+30000,connected:true,hp:STATS[c][0],maxHp:STATS[c][0],x:0,y:0,energy:120,delay:0,coins:9000,inventory:Array(9).fill(0),special:3,shield:0,poison:0,hidden:0,immunity:0,nextTurnBonus:0,moveBoost:false,itemUsed:false,disconnectedAt:0};}
-export function snapshot(room,now=Date.now(),viewerId=null){const viewer=room.players.find(p=>p.id===viewerId);return {type:'state',code:room.code,phase:room.phase,mapId:room.mapId,mapName:room.mapName,host:room.host,players:room.players.map(({disconnectedAt,selectionDeadline,...rest})=>{const p={...rest,selectionSeconds:Math.max(0,(selectionDeadline-now)/1000)};return viewer&&p.hidden>0&&p.team!==viewer.team?{...p,x:0,y:0,energy:0}:p}),clouds:room.clouds,terrain:room.terrain,baseTerrain:room.mapId>=6?newTerrain(room.mapId):null,turn:room.turn,turnOrder:room.turnOrder.filter(id=>room.players.some(p=>p.id===id&&p.hp>0)),turnNumber:room.turnNumber,wind:room.wind,seconds:Math.max(0,(room.deadline-now)/1000),winner:room.winner,lastShot:room.lastShot&&!(viewer&&room.players.some(p=>p.id===room.lastShot.owner&&p.team!==viewer.team&&p.hidden>0))?{...room.lastShot,elapsed:(now-room.lastShot.startedAt)/1000}:null};}
+export function snapshot(room,now=Date.now(),viewerId=null){const viewer=room.players.find(p=>p.id===viewerId);return {type:'state',code:room.code,phase:room.phase,solo:!!room.solo,mapId:room.mapId,mapName:room.mapName,host:room.host,players:room.players.map(({disconnectedAt,selectionDeadline,...rest})=>{const p={...rest,selectionSeconds:Math.max(0,(selectionDeadline-now)/1000)};return viewer&&p.hidden>0&&p.team!==viewer.team?{...p,x:0,y:0,energy:0}:p}),clouds:room.clouds,terrain:room.terrain,baseTerrain:room.mapId>=6?newTerrain(room.mapId):null,turn:room.turn,turnOrder:room.turnOrder.filter(id=>room.players.some(p=>p.id===id&&p.hp>0)),turnNumber:room.turnNumber,wind:room.wind,seconds:Math.max(0,(room.deadline-now)/1000),winner:room.winner,lastShot:room.lastShot&&!(viewer&&room.players.some(p=>p.id===room.lastShot.owner&&p.team!==viewer.team&&p.hidden>0))?{...room.lastShot,elapsed:(now-room.lastShot.startedAt)/1000}:null};}
 export function newCode(){return randomBytes(4).toString('hex').slice(0,6).toUpperCase();}
 function setCharacter(p,c){p.character=c;p.maxHp=p.hp=STATS[c][0];}
 function expireSelection(p,now){
@@ -49,7 +49,7 @@ function expireSelection(p,now){
 function assert(ok,message){if(!ok)throw new Error(message);}
 function alive(room){return room.players.filter(p=>p.hp>0);}
 function settle(room){for(const p of room.players){if(p.hp<=0)continue;let y=ground(room,p.x);let fall=p.y-y;p.y=y;if(fall>95)p.hp=Math.max(0,p.hp-Math.floor((fall-95)*.35));if(y<8)p.hp=0;}}
-function victory(room){let teams=new Set(alive(room).map(p=>p.team));if(teams.size<=1){room.phase='finished';room.winner=teams.size===0?'무승부':([...teams][0]===0?'BLUE TEAM':'RED TEAM');room.turn='';return true;}return false;}
+function victory(room){if(room.solo&&alive(room).length>0)return false;let teams=new Set(alive(room).map(p=>p.team));if(teams.size<=1){room.phase='finished';room.winner=teams.size===0?'무승부':([...teams][0]===0?'BLUE TEAM':'RED TEAM');room.turn='';return true;}return false;}
 export function nextTurn(room,now=Date.now()){
  if(victory(room))return;
  const previous=room.turnOrder.indexOf(room.turn);
@@ -70,10 +70,11 @@ room.turn=p.id;room.turnNumber++;p.energy=Math.round(120*STATS[p.character][2]);
 }
 export function start(room,now=Date.now(),random=Math.random,chooseMap=()=>randomInt(6)){
  assert(room.phase==='lobby','대기실에서 시작할 수 있습니다.');
- assert(room.players.length>=2,'최소 2명이 필요합니다.');
- assert(room.players.every(p=>p.ready&&p.connected),'모두 준비를 눌러 주세요.');
- assert(new Set(room.players.map(p=>p.team)).size===2,'양 팀에 최소 1명씩 필요합니다.');
- assert(room.players.filter(p=>p.team===0).length===room.players.filter(p=>p.team===1).length,'양 팀 인원을 같게 맞춰 주세요.');
+ assert(room.players.length>=1,'최소 1명이 필요합니다.');
+ assert(room.players.every(p=>p.connected&&(room.players.length===1||p.ready)),'모두 준비를 눌러 주세요.');
+ assert(room.players.length===1||new Set(room.players.map(p=>p.team)).size===2,'양 팀에 최소 1명씩 필요합니다.');
+ assert(room.players.length===1||room.players.filter(p=>p.team===0).length===room.players.filter(p=>p.team===1).length,'양 팀 인원을 같게 맞춰 주세요.');
+ room.solo=room.players.length===1;if(room.solo){room.players[0].ready=true;room.players[0].selectionLocked=true;}
  room.mapId=chooseMap();room.mapName=MAP_NAMES[room.mapId];room.terrain=newTerrain(room.mapId);room.clouds=[];room.lastShot=null;room.shotNumber=0;room.turnNumber=0;room.winner='';
  for(let team=0;team<2;team++)room.players.filter(p=>p.team===team).forEach((p,i)=>{p.x=room.mapId===7?[[90,250,440,580],[1510,1360,1120,1010]][team][i]:room.mapId===6?[[110,255,490,750],[1490,1320,1220,1020]][team][i]:(team===0?120+i*175:1480-i*175);p.y=ground(room,p.x);p.hp=p.maxHp;p.delay=i*10+team*5;p.special=3;p.shield=p.poison=p.hidden=p.immunity=p.nextTurnBonus=0;p.moveBoost=false;});
  room.turnOrder=room.players.map(p=>p.id);
@@ -104,7 +105,7 @@ function finishAction(room,p,delay,now){if(!victory(room))nextTurn(room,now);}
 export function command(room,id,msg,now=Date.now()){
  const p=room.players.find(p=>p.id===id);assert(p,'플레이어를 찾을 수 없습니다.');room.lastActive=now;
  if(msg.type==='leave'){p.hp=0;p.connected=false;if(room.host===id)room.host=room.players.find(q=>q.id!==id&&q.connected)?.id||'';if(room.phase==='lobby'){room.players=room.players.filter(q=>q.id!==id);if(room.host===id)room.host=room.players[0]?.id||'';}else if(room.phase!=='finished'){if(!victory(room)&&room.turn===id)nextTurn(room,now);}return;}
- if(msg.type==='rematch'){assert(id===room.host&&room.phase==='finished','방장만 재대결을 시작할 수 있습니다.');room.players=room.players.filter(q=>q.connected);room.phase='lobby';room.turn='';room.turnOrder=[];for(const q of room.players){q.ready=false;q.selectionLocked=false;q.selectionAuto=false;q.selectionDeadline=now+30000;q.coins=9000;q.inventory.fill(0);}return;}
+ if(msg.type==='rematch'){assert(id===room.host&&room.phase==='finished','방장만 재대결을 시작할 수 있습니다.');room.players=room.players.filter(q=>q.connected);room.phase='lobby';room.solo=false;room.turn='';room.turnOrder=[];for(const q of room.players){q.ready=false;q.selectionLocked=false;q.selectionAuto=false;q.selectionDeadline=now+30000;q.coins=9000;q.inventory.fill(0);}return;}
  if(room.phase==='lobby'){
   expireSelection(p,now);
   if(msg.type==='select'){assert(!p.selectionLocked,'캐릭터 선택이 확정되었습니다.');assert(Number.isInteger(msg.character)&&msg.character>=0&&msg.character<10,'잘못된 캐릭터입니다.');setCharacter(p,msg.character);p.ready=false;}
