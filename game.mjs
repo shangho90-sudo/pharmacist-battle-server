@@ -138,7 +138,7 @@ export function command(room,id,msg,now=Date.now()){
  const shots=Array.from({length:weapon.count},(_,index)=>{
   const offset=(index-(weapon.count-1)/2)*(weapon.spread||0);
   const shot=trace(room,p,clamp(msg.angle+offset,0,180),msg.power,kind);
-  const startDelay=index*(weapon.interval||0),flightDuration=(shot.points.length-1)*.05/(room.fastShots?2:1);
+  const startDelay=index*(weapon.interval||0),flightDuration=(shot.points.length-1)*.05/(room.fastShots?1.4:1);
   return {...shot,index,startDelay,flightDuration,effectDelay:weapon.effectDelay,impactAt:now+(startDelay+flightDuration+weapon.effectDelay)*1000,resolved:false};
  });
  room.lastShot={id:++room.shotNumber,startedAt:now,owner:id,character:p.character,visual:weapon.visual,kind,
