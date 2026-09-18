@@ -25,6 +25,7 @@ export function createBattleServer({port=Number(process.env.PORT||8080),host='0.
      if(old){const r=rooms.get(old.room),p=r?.players.find(p=>p.id===old.id);if(r&&p&&(!p.disconnectedAt||now-p.disconnectedAt<45000)){old.ws?.close(4001,'Reconnected elsewhere');session=old;old.ws=ws;p.connected=true;p.disconnectedAt=0;send(ws,{type:'welcome',id:old.id,token:old.token,code:r.code});publish(r);return;}}
      send(ws,{type:'hello'});return;
     }
+    if(m.type==='listRooms'){clearTimeout(authTimer);send(ws,{type:'rooms',rooms:[...rooms.values()].filter(r=>r.players.some(p=>p.connected)).map(r=>({code:r.code,hostName:r.players.find(p=>p.id===r.host)?.name||'대기실',count:r.players.length,capacity:8,phase:r.phase,joinable:r.phase==='lobby'&&r.players.length<8})).sort((a,b)=>Number(b.joinable)-Number(a.joinable)||a.code.localeCompare(b.code))});return;}
     if(!session){
      if(!['create','join'].includes(m.type))throw new Error('먼저 방에 입장해 주세요.');
      let room;
