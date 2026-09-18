@@ -32,15 +32,15 @@ export function createBattleServer({port=Number(process.env.PORT||8080),host='0.
      if(m.type==='create'){if(rooms.size>=100)throw new Error('서버가 혼잡합니다.');let code;do{code=newCode();}while(rooms.has(code));room=makeRoom(code);rooms.set(code,room);}
      else {room=rooms.get(String(m.code||'').trim().toUpperCase());if(!room)throw new Error('방 코드를 확인해 주세요.');if(room.phase!=='lobby')throw new Error('이미 전투 중인 방입니다.');if(room.players.length>=8)throw new Error('방이 가득 찼습니다.');}
      const id=randomBytes(12).toString('hex'),token=randomBytes(32).toString('hex');
-     const player=makePlayer(id,m.name,m.character);player.team=room.players.filter(p=>p.team===0).length<=room.players.filter(p=>p.team===1).length?0:1;room.players.push(player);room.host ||= id;
+     const used=new Set(room.players.map(p=>p.character));const preferred=Number.isInteger(m.character)&&m.character>=0&&m.character<10?m.character:0;const initial=used.has(preferred)?Array.from({length:10},(_,i)=>i).find(i=>!used.has(i)):preferred;const player=makePlayer(id,m.name,initial);player.team=room.players.filter(p=>p.team===0).length<=room.players.filter(p=>p.team===1).length?0:1;room.players.push(player);room.host ||= id;
      session={id,token,room:room.code,ws};sessions.set(token,session);clearTimeout(authTimer);send(ws,{type:'welcome',id,token,code:room.code});publish(room);return;
     }
     if(m.type==='ping'){send(ws,{type:'pong'});return;}
     if(m.type==='leave'){leave(session);session=null;send(ws,{type:'left'});return;}
-    const room=rooms.get(session.room);if(!room)throw new Error('방이 종료되었습니다.');command(room,session.id,m,now);publish(room);
+    const room=rooms.get(session.room);if(!room)throw new Error('방이 종료되었습니다.');command(room,session.id,m,now);if(m.type==='kick'){for(const [token,kicked] of sessions){if(kicked.room===room.code&&kicked.id===m.target){send(kicked.ws,{type:'kicked',message:'방장에 의해 대기실에서 퇴장했습니다.'});sessions.delete(token);kicked.ws?.close(4003,'Kicked');}}}publish(room);
    }catch(e){send(ws,{type:'error',message:e instanceof SyntaxError?'잘못된 메시지입니다.':e.message});}
   });
-  ws.on('close',()=>{clearTimeout(authTimer);if(!session||session.ws!==ws)return;session.ws=null;const r=rooms.get(session.room),p=r?.players.find(p=>p.id===session.id);if(p){p.connected=false;p.disconnectedAt=Date.now();publish(r);}});
+  ws.on('close',()=>{clearTimeout(authTimer);if(!session||session.ws!==ws)return;session.ws=null;const r=rooms.get(session.room),p=r?.players.find(p=>p.id===session.id);if(p){if(r.phase!=='lobby'){leave(session);}else{p.connected=false;p.disconnectedAt=Date.now();publish(r);}}});
   ws.on('error',()=>{});
  });
  let lastSecond=0;
