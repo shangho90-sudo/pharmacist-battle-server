@@ -1,55 +1,110 @@
 import http from 'node:http';
-import { randomBytes } from 'node:crypto';
-import { WebSocketServer, WebSocket } from 'ws';
-import {makeRoom,makePlayer,newCode,command,snapshot,tick} from './game.mjs';
-import {pathToFileURL} from 'node:url';
-export function createBattleServer({port=Number(process.env.PORT||8080),host='0.0.0.0',allowedOrigins=(process.env.ALLOWED_ORIGINS||'').split(',').filter(Boolean)}={}){
- const rooms=new Map(),sessions=new Map();
- const server=http.createServer((req,res)=>{res.setHeader('Content-Type','application/json');if(req.url==='/health'){res.end(JSON.stringify({ok:true,rooms:rooms.size}));}else{res.writeHead(404);res.end('{"error":"Not found"}');}});
- const wss=new WebSocketServer({server,maxPayload:4096,perMessageDeflate:false,verifyClient:({origin})=>!origin||allowedOrigins.includes(origin)||(!allowedOrigins.length&&process.env.NODE_ENV!=='production')});
- const send=(ws,data)=>{if(ws?.readyState===WebSocket.OPEN){if(ws.bufferedAmount>1024*1024){ws.terminate();return;}ws.send(JSON.stringify(data));}};
- const publish=room=>{for(const s of sessions.values())if(s.room===room.code)send(s.ws,snapshot(room,Date.now(),s.id));};
- function leave(s){let room=rooms.get(s.room);if(room){command(room,s.id,{type:'leave'});publish(room);}sessions.delete(s.token);}
- wss.on('connection',ws=>{
-  if(wss.clients.size>300){ws.close(1013,'Capacity');return;}
-  let session=null;let windowStart=Date.now(),count=0;let isAlive=true;
-  ws.on('pong',()=>{isAlive=true;});ws._checkAlive=()=>{if(!isAlive){ws.terminate();return;}isAlive=false;ws.ping();};
-  const authTimer=setTimeout(()=>{if(!session)ws.close(1008,'Join timeout');},15000);
-  ws.on('message',raw=>{
-   try{
-    const now=Date.now();if(now-windowStart>1000){windowStart=now;count=0;}if(++count>35){ws.close(1008,'Too many commands');return;}
-    const m=JSON.parse(raw.toString());if(!m||typeof m.type!=='string')throw new Error('잘못된 요청입니다.');
-    if(m.type==='hello'){
-     if(session)throw new Error('이미 접속되어 있습니다.');
-     const old=typeof m.token==='string'?sessions.get(m.token):null;
-     if(old){const r=rooms.get(old.room),p=r?.players.find(p=>p.id===old.id);if(r&&p&&(!p.disconnectedAt||now-p.disconnectedAt<45000)){old.ws?.close(4001,'Reconnected elsewhere');session=old;old.ws=ws;p.connected=true;p.disconnectedAt=0;send(ws,{type:'welcome',id:old.id,token:old.token,code:r.code});publish(r);return;}}
-     send(ws,{type:'hello'});return;
-    }
-    if(m.type==='listRooms'){clearTimeout(authTimer);send(ws,{type:'rooms',rooms:[...rooms.values()].filter(r=>r.players.some(p=>p.connected)).map(r=>({code:r.code,hostName:r.players.find(p=>p.id===r.host)?.name||'대기실',count:r.players.length,capacity:8,phase:r.phase,joinable:r.phase==='lobby'&&r.players.length<8})).sort((a,b)=>Number(b.joinable)-Number(a.joinable)||a.code.localeCompare(b.code))});return;}
-    if(!session){
-     if(!['create','join'].includes(m.type))throw new Error('먼저 방에 입장해 주세요.');
-     let room;
-     if(m.type==='create'){if(rooms.size>=100)throw new Error('서버가 혼잡합니다.');let code;do{code=newCode();}while(rooms.has(code));room=makeRoom(code);rooms.set(code,room);}
-     else {room=rooms.get(String(m.code||'').trim().toUpperCase());if(!room)throw new Error('방 코드를 확인해 주세요.');if(room.phase!=='lobby')throw new Error('이미 전투 중인 방입니다.');if(room.players.length>=8)throw new Error('방이 가득 찼습니다.');}
-     const id=randomBytes(12).toString('hex'),token=randomBytes(32).toString('hex');
-     const used=new Set(room.players.map(p=>p.character));const preferred=Number.isInteger(m.character)&&m.character>=0&&m.character<10?m.character:0;const initial=used.has(preferred)?Array.from({length:10},(_,i)=>i).find(i=>!used.has(i)):preferred;const player=makePlayer(id,m.name,initial);player.team=room.players.filter(p=>p.team===0).length<=room.players.filter(p=>p.team===1).length?0:1;room.players.push(player);room.host ||= id;
-     session={id,token,room:room.code,ws};sessions.set(token,session);clearTimeout(authTimer);send(ws,{type:'welcome',id,token,code:room.code});publish(room);return;
-    }
-    if(m.type==='ping'){send(ws,{type:'pong'});return;}
-    if(m.type==='leave'){leave(session);session=null;send(ws,{type:'left'});return;}
-    const room=rooms.get(session.room);if(!room)throw new Error('방이 종료되었습니다.');command(room,session.id,m,now);if(m.type==='kick'){for(const [token,kicked] of sessions){if(kicked.room===room.code&&kicked.id===m.target){send(kicked.ws,{type:'kicked',message:'방장에 의해 대기실에서 퇴장했습니다.'});sessions.delete(token);kicked.ws?.close(4003,'Kicked');}}}publish(room);
-   }catch(e){send(ws,{type:'error',message:e instanceof SyntaxError?'잘못된 메시지입니다.':e.message});}
-  });
-  ws.on('close',()=>{clearTimeout(authTimer);if(!session||session.ws!==ws)return;session.ws=null;const r=rooms.get(session.room),p=r?.players.find(p=>p.id===session.id);if(p){if(r.phase!=='lobby'){leave(session);}else{p.connected=false;p.disconnectedAt=Date.now();publish(r);}}});
-  ws.on('error',()=>{});
+import {randomBytes,randomInt} from 'node:crypto';
+import {readFile,stat} from 'node:fs/promises';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {WebSocketServer,WebSocket} from 'ws';
+const here=path.dirname(fileURLToPath(import.meta.url));
+const validName=value=>typeof value==='string'&&/^[\p{L}\p{N} _-]{1,12}$/u.test(value.normalize('NFC').trim());
+export function createApp({root=path.join(here,'public')}={}) {
+ const rooms=new Map(), peers=new Set();
+ const send=(ws,m)=>{if(ws.readyState===WebSocket.OPEN&&ws.bufferedAmount<512000)ws.send(JSON.stringify(m));};
+ const error=(ws,text)=>send(ws,{type:'error',text});
+ const server=http.createServer(async(req,res)=>{
+  if(req.url==='/health'){res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({ok:true,rooms:rooms.size}));return;}
+  if(!['GET','HEAD'].includes(req.method)){res.writeHead(405);res.end();return;}
+  try {
+   const pathname=decodeURIComponent(new URL(req.url,'http://localhost').pathname);
+   const rel=pathname==='/'?'index.html':pathname.slice(1), file=path.resolve(root,rel);
+   if(!file.startsWith(path.resolve(root)+path.sep))throw Error('path');
+   const st=await stat(file);if(!st.isFile())throw Error('file');
+   const mime={'.html':'text/html; charset=utf-8','.js':'application/javascript','.wasm':'application/wasm','.data':'application/octet-stream','.json':'application/json','.png':'image/png','.css':'text/css'}[path.extname(file)]||'application/octet-stream';
+   res.writeHead(200,{'Content-Type':mime,'X-Content-Type-Options':'nosniff','Cache-Control':file.endsWith('.html')?'no-store':'no-cache'});
+   res.end(req.method==='HEAD'?undefined:await readFile(file));
+  }catch{res.writeHead(404,{'Content-Type':'text/plain; charset=utf-8'});res.end('Unity WebGL 빌드 파일이 없습니다. Pharmacy Arcade > Build > Public Web Package로 빌드하세요.');}
  });
- let lastSecond=0;
+ const wss=new WebSocketServer({server,path:'/room',maxPayload:262144,perMessageDeflate:false});
+ const roster=r=>({type:'room',code:r.code,host:r.host,playing:r.playing,players:r.members.map(p=>({id:p.id,nickname:p.nickname,character:p.character,team:p.team,ready:p.ready}))});
+ const broadcast=(r,m,exclude=null)=>r.members.forEach(p=>{if(p!==exclude)send(p.ws,m);});
+ const refresh=r=>broadcast(r,roster(r));
+ function leave(p){
+  const r=p.room;if(!r)return;p.room=null;r.members=r.members.filter(m=>m!==p);
+  if(!r.members.length){rooms.delete(r.code);return;}
+  if(r.host===p.id){r.host=r.members[0].id;r.members[0].ready=true;if(r.playing){r.playing=false;broadcast(r,{type:'ended',text:'방장이 퇴장하여 대기실로 돌아갑니다.'});}}
+  else if(r.playing)broadcast(r,{type:'departed',target:p.id});
+  refresh(r);
+ }
+ wss.on('connection',(ws,req)=>{
+  // A web page connects to its own origin; no account or login required.
+  if(req.headers.origin){let origin;try{origin=new URL(req.headers.origin);}catch{ws.close(1008);return;}
+   if(origin.host!==req.headers.host && origin.origin!=="https://pharmacy-bomb-arcade.shangho10.chatgpt.site"){ws.close(1008,'origin');return;}}
+  const p={ws,id:randomBytes(12).toString('hex'),room:null,nickname:'',character:0,team:1,ready:false,alive:true,budget:0,window:Date.now()};peers.add(p);
+  send(ws,{type:'welcome',self:p.id});
+  ws.on('pong',()=>p.alive=true);
+  ws.on('message',raw=>{
+   if(Date.now()-p.window>1000){p.window=Date.now();p.budget=0;}if(++p.budget>100){ws.close(1008,'rate');return;}
+   let m;try{m=JSON.parse(raw);}catch{return error(ws,'잘못된 요청입니다.');}
+   if(!m||typeof m.type!=='string')return;
+   if(m.type==='leave'){leave(p);send(ws,{type:'left'});return;}
+   if(m.type==='create'||m.type==='join'){
+    if(p.room)return error(ws,'이미 방에 입장했습니다.');
+    if(!validName(m.nickname))return error(ws,'닉네임은 한글·영문·숫자 1~12자로 입력해주세요.');
+    let r;
+    if(m.type==='create'){
+     if(rooms.size>=500)return error(ws,'현재 방이 가득 찼습니다.');
+     let code;do{code=randomBytes(3).toString('hex').toUpperCase();}while(rooms.has(code));
+     r={code,host:p.id,members:[],playing:false,banned:new Set(),lastState:0};rooms.set(code,r);
+    }else r=rooms.get(String(m.code||'').trim().toUpperCase());
+    if(!r||r.banned.has(p.id))return error(ws,'입장할 수 없는 방입니다.');
+    if(r.playing||r.members.length>=10)return error(ws,'진행 중이거나 가득 찬 방입니다.');
+    const nick=m.nickname.normalize('NFC').trim();if(r.members.some(q=>q.nickname===nick))return error(ws,'방 안에 같은 닉네임이 있습니다.');
+    p.nickname=nick;p.character=Array.from({length:10},(_,i)=>i).find(i=>!r.members.some(q=>q.character===i));
+    p.team=r.members.filter(q=>q.team===1).length<=r.members.filter(q=>q.team===0).length?1:0;
+    p.ready=p.id===r.host;p.room=r;r.members.push(p);refresh(r);return;
+   }
+   const r=p.room;if(!r)return error(ws,'먼저 방에 입장해주세요.');
+   if(m.type==='select'){
+    if(r.playing)return error(ws,'경기 중에는 변경할 수 없습니다.');
+    if(!Number.isInteger(m.character)||m.character<0||m.character>9||![0,1].includes(m.team))return;
+    if(r.members.some(q=>q!==p&&q.character===m.character))return error(ws,'이미 선택된 캐릭터입니다.');
+    if(r.members.filter(q=>q!==p&&q.team===m.team).length>=5)return error(ws,'한 팀은 최대 5명입니다.');
+    p.character=m.character;p.team=m.team;p.ready=p.id===r.host;refresh(r);return;
+   }
+   if(m.type==='ready'){if(!r.playing){p.ready=p.id===r.host||m.ready===true;refresh(r);}return;}
+   if(m.type==='kick'){
+    if(p.id!==r.host)return error(ws,'방장만 강퇴할 수 있습니다.');
+    const target=r.members.find(q=>q.id===m.target&&q!==p);if(!target)return;
+    r.banned.add(target.id);send(target.ws,{type:'kicked',text:'방장에 의해 퇴장되었습니다.'});leave(target);return;
+   }
+   if(m.type==='start'){
+    if(p.id!==r.host)return error(ws,'방장만 시작할 수 있습니다.');
+    if(r.playing)return;
+    if(r.members.length<2||!r.members.some(q=>q.team===0)||!r.members.some(q=>q.team===1))return error(ws,'BLUE·RED 팀에 각각 한 명 이상 필요합니다.');
+    if(r.members.some(q=>!q.ready))return error(ws,'모든 참가자가 준비를 눌러야 합니다.');
+    r.playing=true;r.lastState=Date.now();r.epoch=randomBytes(8).toString('hex');
+    broadcast(r,{...roster(r),type:'start',seed:randomInt(2147483647),map:randomInt(2),epoch:r.epoch});return;
+   }
+   if(m.type==='input'){
+    if(!r.playing||m.epoch!==r.epoch)return;
+    if(!['move','place','needle','fire'].includes(m.action))return;
+    if(m.action==='move'&&(!Number.isInteger(m.direction)||m.direction<0||m.direction>3))return;
+    const host=r.members.find(q=>q.id===r.host);send(host.ws,{type:'input',self:p.id,action:m.action,direction:m.direction||0,epoch:r.epoch});return;
+   }
+   if(m.type==='state'){
+    if(p.id!==r.host||!r.playing||m.epoch!==r.epoch||typeof m.payload!=='string'||m.payload.length>180000)return;
+    r.lastState=Date.now();broadcast(r,{type:'state',payload:m.payload,epoch:r.epoch},p);return;
+   }
+   if(m.type==='return'){
+    if(p.id!==r.host)return error(ws,'방장만 대기실로 돌아갈 수 있습니다.');
+    r.playing=false;r.members.forEach(q=>q.ready=q.id===r.host);broadcast(r,{type:'ended',text:'다음 경기를 준비해주세요.'});refresh(r);
+   }
+  });
+  ws.on('error',()=>{});ws.on('close',()=>{peers.delete(p);leave(p);});
+ });
  const timer=setInterval(()=>{
-  let now=Date.now();const second=Math.floor(now/1000);for(const [code,r]of rooms){const changed=tick(r,now);if(changed||second!==lastSecond)publish(r);
-   if((!r.players.length&&now-r.lastActive>60000)||(!r.players.some(p=>p.connected)&&now-r.lastActive>5*60000)){rooms.delete(code);for(const [token,s]of sessions)if(s.room===code){s.ws?.close(1000,'Room expired');sessions.delete(token);}}
-  }lastSecond=second;
- },100);
- const heartbeat=setInterval(()=>{for(const ws of wss.clients)ws._checkAlive?.();},20000);
- return {rooms,sessions,server,wss,listen:()=>new Promise(resolve=>server.listen(port,host,()=>resolve(server.address()))),close:()=>new Promise(resolve=>{clearInterval(timer);clearInterval(heartbeat);for(const ws of wss.clients)ws.terminate();wss.close(()=>server.close(resolve));})};
+  for(const p of peers){if(!p.alive){p.ws.terminate();continue;}p.alive=false;p.ws.ping();}
+  for(const r of rooms.values())if(r.playing&&Date.now()-r.lastState>15000){r.playing=false;broadcast(r,{type:'ended',text:'방장 연결이 지연되어 대기실로 돌아갑니다.'});refresh(r);}
+ },10000);timer.unref();
+ return {server,rooms,close:()=>new Promise(resolve=>{clearInterval(timer);for(const p of peers)p.ws.terminate();wss.close(()=>server.close(resolve));})};
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){const app=createBattleServer();const address=await app.listen();console.log(`Pharmacist Battle server listening on ${address.port}`);process.on('SIGTERM',async()=>{await app.close();process.exit(0);});}
+if(process.argv[1]===fileURLToPath(import.meta.url)){const app=createApp();app.server.listen(Number(process.env.PORT)||3000,'0.0.0.0',()=>console.log('Pharmacy Arcade public server listening'));}
