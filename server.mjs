@@ -26,10 +26,12 @@ export function createApp({root=path.join(here,'public')}={}) {
  const wss=new WebSocketServer({server,path:'/room',maxPayload:262144,perMessageDeflate:false});
  const roster=r=>({type:'room',code:r.code,host:r.host,playing:r.playing,players:r.members.map(p=>({id:p.id,nickname:p.nickname,character:p.character,team:p.team,ready:p.ready}))});
  const broadcast=(r,m,exclude=null)=>r.members.forEach(p=>{if(p!==exclude)send(p.ws,m);});
- const refresh=r=>broadcast(r,roster(r));
+ const directory=()=>({type:'rooms',rooms:[...rooms.values()].map(r=>({code:r.code,hostName:r.members.find(p=>p.id===r.host)?.nickname||'방장',count:r.members.length,capacity:8,red:r.members.filter(p=>p.team===0).length,blue:r.members.filter(p=>p.team===1).length,playing:r.playing})).sort((a,b)=>Number(a.playing)-Number(b.playing))});
+ const publishRooms=()=>{const message=directory();for(const p of peers)if(p.browsing&&!p.room)send(p.ws,message);};
+ const refresh=r=>{broadcast(r,roster(r));publishRooms();};
  function leave(p){
   const r=p.room;if(!r)return;p.room=null;r.members=r.members.filter(m=>m!==p);
-  if(!r.members.length){rooms.delete(r.code);return;}
+  if(!r.members.length){rooms.delete(r.code);publishRooms();return;}
   if(r.host===p.id){r.host=r.members[0].id;r.members[0].ready=true;if(r.playing){r.playing=false;broadcast(r,{type:'ended',text:'방장이 퇴장하여 대기실로 돌아갑니다.'});}}
   else if(r.playing)broadcast(r,{type:'departed',target:p.id});
   refresh(r);
@@ -45,7 +47,8 @@ export function createApp({root=path.join(here,'public')}={}) {
    if(Date.now()-p.window>1000){p.window=Date.now();p.budget=0;}if(++p.budget>100){ws.close(1008,'rate');return;}
    let m;try{m=JSON.parse(raw);}catch{return error(ws,'잘못된 요청입니다.');}
    if(!m||typeof m.type!=='string')return;
-   if(m.type==='leave'){leave(p);send(ws,{type:'left'});return;}
+   if(m.type==='list'){p.browsing=true;send(ws,directory());return;}
+   if(m.type==='leave'){leave(p);p.browsing=true;send(ws,{type:'left'});send(ws,directory());return;}
    if(m.type==='create'||m.type==='join'){
     if(p.room)return error(ws,'이미 방에 입장했습니다.');
     if(!validName(m.nickname))return error(ws,'닉네임은 한글·영문·숫자 1~12자로 입력해주세요.');
@@ -56,18 +59,18 @@ export function createApp({root=path.join(here,'public')}={}) {
      r={code,host:p.id,members:[],playing:false,banned:new Set(),lastState:0};rooms.set(code,r);
     }else r=rooms.get(String(m.code||'').trim().toUpperCase());
     if(!r||r.banned.has(p.id))return error(ws,'입장할 수 없는 방입니다.');
-    if(r.playing||r.members.length>=10)return error(ws,'진행 중이거나 가득 찬 방입니다.');
+    if(r.playing||r.members.length>=8)return error(ws,'진행 중이거나 가득 찬 방입니다.');
     const nick=m.nickname.normalize('NFC').trim();if(r.members.some(q=>q.nickname===nick))return error(ws,'방 안에 같은 닉네임이 있습니다.');
     p.nickname=nick;p.character=Array.from({length:10},(_,i)=>i).find(i=>!r.members.some(q=>q.character===i));
     p.team=r.members.filter(q=>q.team===1).length<=r.members.filter(q=>q.team===0).length?1:0;
-    p.ready=p.id===r.host;p.room=r;r.members.push(p);refresh(r);return;
+    p.ready=p.id===r.host;p.room=r;p.browsing=false;r.members.push(p);refresh(r);return;
    }
    const r=p.room;if(!r)return error(ws,'먼저 방에 입장해주세요.');
    if(m.type==='select'){
     if(r.playing)return error(ws,'경기 중에는 변경할 수 없습니다.');
     if(!Number.isInteger(m.character)||m.character<0||m.character>9||![0,1].includes(m.team))return;
     if(r.members.some(q=>q!==p&&q.character===m.character))return error(ws,'이미 선택된 캐릭터입니다.');
-    if(r.members.filter(q=>q!==p&&q.team===m.team).length>=5)return error(ws,'한 팀은 최대 5명입니다.');
+    if(r.members.filter(q=>q!==p&&q.team===m.team).length>=4)return error(ws,'한 팀은 최대 4명입니다.');
     p.character=m.character;p.team=m.team;p.ready=p.id===r.host;refresh(r);return;
    }
    if(m.type==='ready'){if(!r.playing){p.ready=p.id===r.host||m.ready===true;refresh(r);}return;}
@@ -80,13 +83,14 @@ export function createApp({root=path.join(here,'public')}={}) {
     if(p.id!==r.host)return error(ws,'방장만 시작할 수 있습니다.');
     if(r.playing)return;
     if(r.members.length<2||!r.members.some(q=>q.team===0)||!r.members.some(q=>q.team===1))return error(ws,'BLUE·RED 팀에 각각 한 명 이상 필요합니다.');
+    if(r.members.length>8||[0,1].some(t=>r.members.filter(q=>q.team===t).length>4))return error(ws,'팀전은 최대 4:4입니다.');
     if(r.members.some(q=>!q.ready))return error(ws,'모든 참가자가 준비를 눌러야 합니다.');
     r.playing=true;r.lastState=Date.now();r.epoch=randomBytes(8).toString('hex');
-    broadcast(r,{...roster(r),type:'start',seed:randomInt(2147483647),map:randomInt(2),epoch:r.epoch});return;
+    broadcast(r,{...roster(r),type:'start',seed:randomInt(2147483647),map:randomInt(2),epoch:r.epoch});publishRooms();return;
    }
    if(m.type==='input'){
     if(!r.playing||m.epoch!==r.epoch)return;
-    if(!['move','place','needle','fire'].includes(m.action))return;
+    if(!['move','place','needle'].includes(m.action))return;
     if(m.action==='move'&&(!Number.isInteger(m.direction)||m.direction<0||m.direction>3))return;
     const host=r.members.find(q=>q.id===r.host);send(host.ws,{type:'input',self:p.id,action:m.action,direction:m.direction||0,epoch:r.epoch});return;
    }
