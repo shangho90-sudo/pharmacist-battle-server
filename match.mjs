@@ -12,7 +12,7 @@ export class Match {
  if(input.drift&&!p.lock){p.speed=Math.max(Math.min(p.speed,29*.48),p.speed-30*dt);if(Math.abs(steer)>.1&&p.speed>10)p.charge=Math.min(1,p.charge+dt*.5);}else{if(p.charge>.45)p.boost=Math.max(p.boost,p.charge*1.8);p.charge=0;let goal=input.brake?0:max;let accel=input.brake?36:12;p.speed+=clamp(goal-p.speed,-accel*dt,accel*dt);}
  p.steer=steer;p.drifting=input.drift&&!p.lock&&p.speed>4;let old=p.s;p.heading=clamp(p.heading+steer*(input.drift?2.1:1.18)*dt,-1.3,1.3);if(!steer)p.heading*=Math.exp(-dt*1.8);p.lane+=Math.sin(p.heading)*p.speed*dt;p.s+=Math.cos(p.heading)*p.speed*dt;
  if(Math.abs(p.lane)>8.25){p.lane=clamp(p.lane,-8.25,8.25);p.speed*=.85;p.heading*=.75;}
- for(const zone of this.boostZones){let gap=((zone.s-old)%this.track.length+this.track.length)%this.track.length;if(!p.air&&(zone.hits.get(p.id)||-99)<=this.elapsed&&gap<Math.max(2.7,p.s-old+2.7)&&Math.abs(p.lane-zone.lane)<=3.5){zone.hits.set(p.id,this.elapsed+4);p.boost=Math.max(p.boost,3);this.events.push({type:'boostzone',id:p.id,kind:3});}}let lapS=((p.s%this.track.length)+this.track.length)%this.track.length;
+ for(const zone of this.boostZones){let gap=((zone.s-old+this.track.length*.5)%this.track.length+this.track.length)%this.track.length-this.track.length*.5;if(!p.air&&(zone.hits.get(p.id)||-99)<=this.elapsed&&gap>=-2.7&&gap<Math.max(2.7,p.s-old+2.7)&&Math.abs(p.lane-zone.lane)<=3.5){zone.hits.set(p.id,this.elapsed+4);p.boost=Math.max(p.boost,3);this.events.push({type:'boostzone',id:p.id,kind:3});}}let lapS=((p.s%this.track.length)+this.track.length)%this.track.length;
  for(let o of this.obstacles)if(Math.abs(lapS-o.s)<o.radius+1.3&&Math.abs(p.lane-o.lane)<o.radius+1){p.s=old;p.lane=clamp(p.lane+(p.lane>o.lane?.3:-.3),-8.25,8.25);p.speed*=.65;break;}
  if(p.item<0)for(let b of this.boxes){let gap=((b.s-old)%this.track.length+this.track.length)%this.track.length;if(b.respawn<=this.elapsed&&gap<Math.max(1.9,p.s-old+1.9)&&Math.abs(p.lane-b.lane)<1.9){p.item=rollItem(this.random);b.respawn=this.elapsed+3;this.events.push({type:'pickup',id:p.id,kind:p.item});break;}}
  if(p.s>=this.track.length*3){p.place=++this.place;p.finishTime=this.elapsed;p.speed=0;}
@@ -25,6 +25,7 @@ export class Match {
  }
  snapshot(){return {type:'snapshot',elapsed:this.elapsed,players:this.players.map(({id,x,z,yaw,s,lane,speed,item,boost,shield,lock,spin,air,charge,place,finishTime,steer,drifting})=>({id,x,z,yaw,progress:s,lane,speed,item,boost,shield,controlLock:lock,spinTime:spin,airTime:air,driftCharge:charge,place,finishTime,steer,drifting})),boxes:this.boxes.map(b=>Math.max(0,b.respawn-this.elapsed)),events:this.events};}
 }
+
 
 
 
