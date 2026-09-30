@@ -1,9 +1,8 @@
 FROM node:22-alpine
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci --omit=dev
-COPY game.mjs server.mjs ./
-USER node
-ENV NODE_ENV=production PORT=8080
-EXPOSE 8080
+COPY package.json ./
+RUN npm install --omit=dev --ignore-scripts
+COPY *.mjs ./
+ENV NODE_ENV=production
+EXPOSE 8780
 CMD ["node","server.mjs"]
