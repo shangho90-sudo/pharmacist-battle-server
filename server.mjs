@@ -8,7 +8,8 @@ export function createBattleServer({port=Number(process.env.PORT||8080),host='0.
  const server=http.createServer((req,res)=>{res.setHeader('Content-Type','application/json');if(req.url==='/health'){res.end(JSON.stringify({ok:true,rooms:rooms.size}));}else{res.writeHead(404);res.end('{"error":"Not found"}');}});
  const wss=new WebSocketServer({server,maxPayload:4096,perMessageDeflate:false,verifyClient:({origin})=>!origin||allowedOrigins.includes(origin)||(!allowedOrigins.length&&process.env.NODE_ENV!=='production')});
  const send=(ws,data)=>{if(ws?.readyState===WebSocket.OPEN){if(ws.bufferedAmount>1024*1024){ws.terminate();return;}ws.send(JSON.stringify(data));}};
- const publish=room=>{for(const s of sessions.values())if(s.room===room.code)send(s.ws,snapshot(room,Date.now(),s.id));};
+ // Each session receives the full foreground mask once, then only versioned changed-area patches.
+ const publish=room=>{const now=Date.now();for(const s of sessions.values())if(s.room===room.code&&s.ws?.readyState===WebSocket.OPEN){send(s.ws,snapshot(room,now,s.id,s.terrainVersion??-1));s.terrainVersion=room.terrainVersion;}};
  function leave(s){let room=rooms.get(s.room);if(room){command(room,s.id,{type:'leave'});publish(room);}sessions.delete(s.token);}
  wss.on('connection',ws=>{
   if(wss.clients.size>300){ws.close(1013,'Capacity');return;}
@@ -22,7 +23,7 @@ export function createBattleServer({port=Number(process.env.PORT||8080),host='0.
     if(m.type==='hello'){
      if(session)throw new Error('이미 접속되어 있습니다.');
      const old=typeof m.token==='string'?sessions.get(m.token):null;
-     if(old){const r=rooms.get(old.room),p=r?.players.find(p=>p.id===old.id);if(r&&p&&(!p.disconnectedAt||now-p.disconnectedAt<45000)){old.ws?.close(4001,'Reconnected elsewhere');session=old;old.ws=ws;p.connected=true;p.disconnectedAt=0;send(ws,{type:'welcome',id:old.id,token:old.token,code:r.code});publish(r);return;}}
+     if(old){const r=rooms.get(old.room),p=r?.players.find(p=>p.id===old.id);if(r&&p&&(!p.disconnectedAt||now-p.disconnectedAt<45000)){old.ws?.close(4001,'Reconnected elsewhere');session=old;old.ws=ws;old.terrainVersion=-1;p.connected=true;p.disconnectedAt=0;send(ws,{type:'welcome',id:old.id,token:old.token,code:r.code});publish(r);return;}}
      send(ws,{type:'hello'});return;
     }
     if(m.type==='listRooms'){clearTimeout(authTimer);send(ws,{type:'rooms',rooms:[...rooms.values()].filter(r=>r.players.some(p=>p.connected)).map(r=>({code:r.code,hostName:r.players.find(p=>p.id===r.host)?.name||'대기실',count:r.players.length,capacity:8,phase:r.phase,joinable:r.phase==='lobby'&&r.players.length<8})).sort((a,b)=>Number(b.joinable)-Number(a.joinable)||a.code.localeCompare(b.code))});return;}

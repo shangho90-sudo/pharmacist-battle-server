@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {makeRoom,makePlayer,start,command,nextTurn,tick,trace,snapshot,COSTS} from '../game.mjs';
-function battle(){const r=makeRoom('ITEMS');r.players=[makePlayer('a','A',0),makePlayer('b','B',1)];r.host='a';r.players[1].team=1;for(const p of r.players){p.ready=true;p.inventory.fill(2);}start(r,1000,()=>.999999,()=>0);r.terrain.fill(200);r.players[0].x=100;r.players[1].x=800;for(const p of r.players)p.y=200;r.wind=0;return r;}
+import {makeRoom,makePlayer,start,command,nextTurn,tick,trace,snapshot,COSTS,flatTerrain} from '../game.mjs';
+function battle(){const r=makeRoom('ITEMS');r.players=[makePlayer('a','A',0),makePlayer('b','B',1)];r.host='a';r.players[1].team=1;for(const p of r.players){p.ready=true;p.inventory.fill(2);}start(r,1000,()=>.999999,()=>0);flatTerrain(r,200);r.players[0].x=100;r.players[1].x=800;for(const p of r.players)p.y=200;r.wind=0;return r;}
 function turn(r,id,now=2000){const i=r.turnOrder.indexOf(id);r.turn=r.turnOrder[(i+r.turnOrder.length-1)%r.turnOrder.length];nextTurn(r,now);}
 function impact(r,owner,kind,x=800,y=230){r.phase='resolving';r.pending={id:owner,kind,shots:[{hit:true,x,y}],multi:false,multiplier:1};r.turn=r.turnOrder[(r.turnOrder.indexOf(owner)+r.turnOrder.length-1)%r.turnOrder.length];r.resumeAt=1800;tick(r,1800);}
 test('all nine prices, initial budget and rematch reset',()=>{assert.deepEqual(COSTS,[2000,3000,3000,2000,1000,2500,3000,2000,4000]);const r=battle();assert.equal(r.players[0].coins,9000);r.players[0].coins=20;r.phase='finished';command(r,'a',{type:'rematch'},2000);assert.equal(r.players[0].coins,9000);assert.equal(r.players[0].inventory.reduce((a,b)=>a+b),0);});

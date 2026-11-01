@@ -1,7 +1,8 @@
 import { randomBytes, randomInt } from 'node:crypto';
+import { WORLD, TerrainMask } from './terrain.mjs';
+export { WORLD, TerrainMask };
 export const NAMES=['팽약사','구약사','방약사','철약사','동약사','석약사','두약사','조약사','사공약사','용약사'];
 export const COSTS=[2000,3000,3000,2000,1000,2500,3000,2000,4000];
-export const WORLD= {width:3200,height:1800,step:4};
 export const STATS=[ [300,1,1],[330,1,0.9],[280,1,1.2],[270,1,.85],[290,1,1],[340,1,.8],[290,1,1.1],[300,1,.95],[300,1,1.1],[310,1,.9] ];
 export const WEAPONS=[
  {visual:'red-pill',count:1,radius:62,effectDelay:0},
@@ -35,11 +36,28 @@ const SNOW_SOURCE_PROFILE=[[0, 323], [110, 322], [200, 320], [325, 325], [335, 5
 MAP_PROFILES.push(SNOW_SOURCE_PROFILE.map(([x,y])=>[x/1672*1600,(941-y)/941*900]));
 export function chooseOriginalMap(random=Math.random){return random()<.5?6:7;}
 
-export function newTerrain(mapId=0){const profile=MAP_PROFILES[mapId]||MAP_PROFILES[0];return Array.from({length:WORLD.width/WORLD.step+1},(_,i)=>{const x=i*WORLD.step/2;let index=1;while(index<profile.length-1&&x>profile[index][0])index++;const [ax,ay]=profile[index-1],[bx,by]=profile[index];return Math.round(2*(ay+(by-ay)*(x-ax)/(bx-ax)));});}
-export function ground(room,x){const sample=clamp(x/WORLD.step,0,room.terrain.length-1),i=Math.floor(sample),j=Math.min(room.terrain.length-1,i+1);return room.terrain[i]+(room.terrain[j]-room.terrain[i])*(sample-i);}
-export function makeRoom(code){return {code,phase:'lobby',mapId:-1,mapName:'',host:'',players:[],terrain:newTerrain(),turn:'',turnOrder:[],turnNumber:0,wind:0,deadline:0,winner:'',lastShot:null,shotNumber:0,events:[],clouds:[],created:Date.now(),lastActive:Date.now(),resumeAt:0};}
+// Profiles are authored in a 1600x900 space and scaled to the shared world size.
+export function profileHeightAt(mapId,x){const profile=MAP_PROFILES[mapId]||MAP_PROFILES[0];const px=x*WORLD.profileWidth/WORLD.width;let index=1;while(index<profile.length-1&&px>profile[index][0])index++;const [ax,ay]=profile[index-1],[bx,by]=profile[index];return (ay+(by-ay)*Math.max(0,Math.min(1,(px-ax)/(bx-ax))))*WORLD.height/WORLD.profileHeight;}
+const baseMasks=new Map(),baseHeights=new Map();
+export function baseMask(mapId=0){if(!baseMasks.has(mapId))baseMasks.set(mapId,TerrainMask.fromHeights(x=>profileHeightAt(mapId,x)));return baseMasks.get(mapId);}
+// Legacy top-surface heights (WORLD.legacyColumns+1 samples) of an untouched map.
+export function newTerrain(mapId=0){if(!baseHeights.has(mapId))baseHeights.set(mapId,baseMask(mapId).legacyHeights());return [...baseHeights.get(mapId)];}
+export function setTerrain(room,mask){room.mask=mask;room.terrainVersion=(room.terrainVersion||0)+1;room.terrainBase=room.terrainVersion;room.terrainPatches=[];room.terrain=mask.legacyHeights();}
+// Test/editor helper: a flat foreground of height h (or any height function).
+export function flatTerrain(room,h){setTerrain(room,TerrainMask.fromHeights(typeof h==='function'?h:()=>h));}
+// Height of the walkable surface under x, searching down from y (default: top of world).
+export function ground(room,x,y=WORLD.height){return Math.max(0,room.mask.surfaceBelow(clamp(x,0,WORLD.width-.001),y));}
+export function makeRoom(code){const room={code,phase:'lobby',mapId:-1,mapName:'',host:'',players:[],turn:'',turnOrder:[],turnNumber:0,wind:0,deadline:0,winner:'',lastShot:null,shotNumber:0,events:[],clouds:[],created:Date.now(),lastActive:Date.now(),resumeAt:0};setTerrain(room,baseMask(0).clone());return room;}
 export function makePlayer(id,name,character,now=Date.now()){let c=clamp(Math.trunc(character||0),0,9);return {id,name:String(name||'약사').trim().slice(0,12),character:c,team:0,ready:false,selectionLocked:false,selectionClaimed:false,selectionAuto:false,selectionDeadline:now+30000,connected:true,hp:STATS[c][0],maxHp:STATS[c][0],x:0,y:0,energy:120,delay:0,coins:9000,inventory:Array(9).fill(0),special:3,shield:0,poison:0,hidden:0,immunity:0,nextTurnBonus:0,moveBoost:false,itemUsed:false,disconnectedAt:0};}
-export function snapshot(room,now=Date.now(),viewerId=null){const viewer=room.players.find(p=>p.id===viewerId);return {type:'state',worldWidth:WORLD.width,worldHeight:WORLD.height,code:room.code,phase:room.phase,solo:!!room.solo,mapId:room.mapId,mapName:room.mapName,host:room.host,players:room.players.map(({disconnectedAt,selectionDeadline,...rest})=>{const p={...rest,selectionSeconds:Math.max(0,(selectionDeadline-now)/1000)};return viewer&&p.hidden>0&&p.team!==viewer.team?{...p,x:0,y:0,energy:0}:p}),clouds:room.clouds,terrain:room.terrain,baseTerrain:room.mapId>=6?newTerrain(room.mapId):null,turn:room.turn,turnOrder:room.turnOrder.filter(id=>room.players.some(p=>p.id===id&&p.hp>0)),turnNumber:room.turnNumber,wind:room.wind,seconds:Math.max(0,(room.deadline-now)/1000),winner:room.winner,lastShot:room.lastShot&&!(viewer&&room.players.some(p=>p.id===room.lastShot.owner&&p.team!==viewer.team&&p.hidden>0))?{...room.lastShot,elapsed:(now-room.lastShot.startedAt)/1000}:null};}
+// knownVersion: terrain version the receiving client already holds (undefined: no terrain payload).
+export function terrainSync(room,knownVersion){
+ if(knownVersion===undefined||knownVersion===room.terrainVersion)return null;
+ const patches=room.terrainPatches;
+ if(knownVersion>=room.terrainBase&&patches.length&&patches[0].v<=knownVersion+1)return {terrainPatches:patches.filter(q=>q.v>knownVersion)};
+ if(room._maskCache?.v!==room.terrainVersion)room._maskCache={v:room.terrainVersion,...room.mask.encode()};
+ return {terrainMask:room._maskCache};
+}
+export function snapshot(room,now=Date.now(),viewerId=null,knownVersion){const viewer=room.players.find(p=>p.id===viewerId);return {type:'state',worldWidth:WORLD.width,worldHeight:WORLD.height,world:{width:WORLD.width,height:WORLD.height,cell:WORLD.cell,columns:WORLD.width/WORLD.cell,rows:WORLD.height/WORLD.cell},terrainVersion:room.terrainVersion,...terrainSync(room,knownVersion),code:room.code,phase:room.phase,solo:!!room.solo,mapId:room.mapId,mapName:room.mapName,host:room.host,players:room.players.map(({disconnectedAt,selectionDeadline,...rest})=>{const p={...rest,selectionSeconds:Math.max(0,(selectionDeadline-now)/1000)};return viewer&&p.hidden>0&&p.team!==viewer.team?{...p,x:0,y:0,energy:0}:p}),clouds:room.clouds,terrain:room.terrain,baseTerrain:room.mapId>=6?newTerrain(room.mapId):null,turn:room.turn,turnOrder:room.turnOrder.filter(id=>room.players.some(p=>p.id===id&&p.hp>0)),turnNumber:room.turnNumber,wind:room.wind,seconds:Math.max(0,(room.deadline-now)/1000),winner:room.winner,lastShot:room.lastShot&&!(viewer&&room.players.some(p=>p.id===room.lastShot.owner&&p.team!==viewer.team&&p.hidden>0))?{...room.lastShot,elapsed:(now-room.lastShot.startedAt)/1000}:null};}
 export function newCode(){return randomBytes(4).toString('hex').slice(0,6).toUpperCase();}
 function setCharacter(p,c){p.character=c;p.maxHp=p.hp=STATS[c][0];}
 function availableCharacters(room,p){return NAMES.map((_,i)=>i).filter(c=>!room.players.some(q=>q.id!==p.id&&(q.selectionClaimed||q.selectionLocked)&&q.character===c));}
@@ -50,7 +68,8 @@ function expireSelection(room,p,now){
 }
 function assert(ok,message){if(!ok)throw new Error(message);}
 function alive(room){return room.players.filter(p=>p.hp>0);}
-function settle(room){for(const p of room.players){if(p.hp<=0)continue;let y=ground(room,p.x);let fall=p.y-y;p.y=y;if(fall>95)p.hp=Math.max(0,p.hp-Math.floor((fall-95)*.35));if(y<8)p.hp=0;}}
+// Characters drop onto whatever foreground remains directly below their feet.
+function settle(room){for(const p of room.players){if(p.hp<=0)continue;const y=room.mask.surfaceBelow(p.x,p.y);if(y<0){p.y=0;p.hp=0;continue;}const fall=p.y-y;p.y=y;if(fall>95)p.hp=Math.max(0,p.hp-Math.floor((fall-95)*.35));if(y<8)p.hp=0;}}
 function victory(room){if(room.solo&&alive(room).length>0)return false;let teams=new Set(alive(room).map(p=>p.team));if(teams.size<=1){room.phase='finished';room.winner=teams.size===0?'무승부':([...teams][0]===0?'BLUE TEAM':'RED TEAM');room.turn='';return true;}return false;}
 export function nextTurn(room,now=Date.now()){
  if(victory(room))return;
@@ -70,6 +89,7 @@ room.turn=p.id;room.turnOrder=room.turnOrder.filter(id=>room.players.some(q=>q.i
  if(p.hp<=0){nextTurn(room,now);return;}
  room.wind=Math.round((Math.random()*2-1)*50)/10;room.phase='battle';room.deadline=now+20000+p.nextTurnBonus;p.nextTurnBonus=0;
 }
+const SPAWN_GAP=200;
 export function start(room,now=Date.now(),random=Math.random,chooseMap=()=>randomInt(6)){
  assert(room.phase==='lobby','대기실에서 시작할 수 있습니다.');
  assert(room.players.length>=1,'최소 1명이 필요합니다.');
@@ -77,13 +97,13 @@ export function start(room,now=Date.now(),random=Math.random,chooseMap=()=>rando
  assert(new Set(room.players.map(p=>p.character)).size===room.players.length,'같은 캐릭터를 중복 선택할 수 없습니다.');
  assert(room.players.length===1||new Set(room.players.map(p=>p.team)).size===2,'양 팀에 최소 1명씩 필요합니다.');
  assert(room.players.length===1||room.players.filter(p=>p.team===0).length===room.players.filter(p=>p.team===1).length,'양 팀 인원을 같게 맞춰 주세요.');
- room.mapId=chooseMap();room.mapName=MAP_NAMES[room.mapId];room.terrain=newTerrain(room.mapId);room.clouds=[];room.lastShot=null;room.shotNumber=0;room.turnNumber=0;room.winner='';
+ room.mapId=chooseMap();room.mapName=MAP_NAMES[room.mapId];setTerrain(room,baseMask(room.mapId).clone());room.clouds=[];room.lastShot=null;room.shotNumber=0;room.turnNumber=0;room.winner='';
  room.solo=room.players.length===1;
  if(room.solo){const p=room.players[0];claimCharacter(room,p,p.character);p.selectionLocked=true;p.ready=true;}
  const candidates=[];
  for(let x=48;x<=WORLD.width-48;x+=8){const y=ground(room,x);if(y>40&&Math.abs(ground(room,x-18)-y)<24&&Math.abs(ground(room,x+18)-y)<24)candidates.push(x);}
  for(let i=candidates.length-1;i>0;i--){const j=Math.floor(random()*(i+1));[candidates[i],candidates[j]]=[candidates[j],candidates[i]];}
- const positions=[];for(const x of candidates){if(positions.every(v=>Math.abs(v-x)>=100))positions.push(x);if(positions.length===room.players.length)break;}
+ const positions=[];for(const x of candidates){if(positions.every(v=>Math.abs(v-x)>=SPAWN_GAP))positions.push(x);if(positions.length===room.players.length)break;}
  assert(positions.length>=room.players.length,'안전한 생성 위치가 부족합니다.');
  room.players.forEach((p,i)=>{p.x=positions[i];p.y=ground(room,p.x);p.facing=p.x<WORLD.width/2?1:-1;p.hp=p.maxHp;p.delay=0;p.special=3;p.shield=p.poison=p.hidden=p.immunity=p.nextTurnBonus=0;p.moveBoost=false;});
  room.turnOrder=room.players.map(p=>p.id);
@@ -93,7 +113,8 @@ export function start(room,now=Date.now(),random=Math.random,chooseMap=()=>rando
 function damage(room,x,y,radius,amount,part=0,count=1){for(const p of alive(room)){if(p.shield>0)continue;const d=Math.hypot(p.x-x,p.y+32-y);if(d>radius+28)continue;const total=Math.max(0,amount*(1-d/(radius+38)));const hit=Math.round(total*(part+1)/count)-Math.round(total*part/count);p.hp=Math.max(0,p.hp-hit);}}
 function expose(room,p){if(p.shield||p.immunity)return;for(const c of room.clouds)if(c.team!==p.team&&Math.hypot(p.x-c.x,p.y+30-c.y)<=c.radius+28)p.poison=Math.max(p.poison,3);}
 function poisonCloud(room,p,s){room.clouds.push({x:s.x,y:s.y,radius:100,team:p.team,untilTurn:room.turnNumber+3});for(const q of alive(room))expose(room,q);}
-export function crater(room,x,y,r){for(let i=0;i<room.terrain.length;i++){const dx=i*WORLD.step-x;if(Math.abs(dx)<r){let bottom=y-Math.sqrt(r*r-dx*dx);room.terrain[i]=Math.max(0,Math.min(room.terrain[i],bottom));}}}
+// Circular, server-authoritative destruction. Every change becomes a versioned patch.
+export function crater(room,x,y,r){const rect=room.mask.carve(x,y,r);if(!rect)return null;const patch={v:++room.terrainVersion,...room.mask.encode(rect)};room.terrainPatches.push(patch);if(room.terrainPatches.length>WORLD.patchHistory)room.terrainPatches.shift();room.terrain=room.mask.legacyHeights();return patch;}
 export function trace(room,p,angle,power,kind='normal'){
  let x=p.x,y=p.y+55;const speed=160+power*7.2,rad=angle*Math.PI/180;let vx=Math.cos(rad)*speed,vy=Math.sin(rad)*speed;const dt=1/60,points=[{x,y}];let hit=false;
  for(let i=0;i<1200;i++){
@@ -104,22 +125,21 @@ export function trace(room,p,angle,power,kind='normal'){
   }}
   const oldX=x,oldY=y;vx+=room.wind*16*dt;vy-=310*dt;
   const nextX=x+vx*dt,nextY=y+vy*dt;
-  const subdivisions=Math.max(1,Math.ceil(Math.hypot(nextX-x,nextY-y)/1));
-  let collided=false;
+  // Continuous collision: sweep the frame in <=1 unit sub-steps so no cell or character is skipped.
+  const subdivisions=Math.max(1,Math.ceil(Math.hypot(nextX-x,nextY-y)));
+  let collided=false,out=false;
   for(let j=1;j<=subdivisions;j++){
    x=oldX+(nextX-oldX)*j/subdivisions;y=oldY+(nextY-oldY)*j/subdivisions;
-   if(x<0||x>WORLD.width||y<0)break;
-   if(y<=ground(room,x)){
+   if(x<0||x>WORLD.width||y<0){out=true;break;}
+   if(room.mask.solid(x,y)){
     let low=(j-1)/subdivisions,high=j/subdivisions;
-    for(let k=0;k<12;k++){const mid=(low+high)/2,mx=oldX+(nextX-oldX)*mid,my=oldY+(nextY-oldY)*mid;if(my<=ground(room,mx))high=mid;else low=mid;}
+    for(let k=0;k<12;k++){const mid=(low+high)/2;if(room.mask.solid(oldX+(nextX-oldX)*mid,oldY+(nextY-oldY)*mid))high=mid;else low=mid;}
     x=oldX+(nextX-oldX)*high;y=oldY+(nextY-oldY)*high;hit=true;collided=true;break;
    }
+   if(i>10&&alive(room).some(q=>Math.hypot(q.x-x,q.y+30-y)<26)){hit=true;collided=true;break;}
   }
-  if(collided)break;
+  if(collided||out)break;
   if(i%3===0)points.push({x,y});
-  if(x<0||x>WORLD.width||y<0)break;
-  const target=i>10&&alive(room).find(q=>Math.hypot(q.x-x,q.y+30-y)<26);
-  if(y<=ground(room,x)||target){hit=true;break;}
  }
  points.push({x,y});return {points,x,y,hit};
 }
@@ -154,7 +174,7 @@ export function command(room,id,msg,now=Date.now()){
  if(now>=room.deadline){finishAction(room,p,100,now);throw new Error('턴 시간이 끝났습니다.');}
  if(msg.type==='face'){assert(msg.dx===-1||msg.dx===1,'잘못된 방향입니다.');p.facing=msg.dx;return;}
  if(msg.type==='move'){
-  assert(numeric(msg.dx)&&Math.abs(msg.dx)<=12&&msg.dx!==0,'잘못된 이동입니다.');let cost=Math.abs(msg.dx);assert(cost<=p.energy,'이동력이 부족합니다.');let x=clamp(p.x+msg.dx,20,WORLD.width-20);assert(ground(room,x)-p.y<35,'너무 높은 지형입니다.');assert(!alive(room).some(q=>q.id!==id&&Math.abs(q.x-x)<38),'다른 캐릭터가 있습니다.');p.energy-=cost;p.facing=Math.sign(msg.dx);p.x=x;settle(room);expose(room,p);if(!victory(room)&&p.hp<=0)nextTurn(room,now);return;
+  assert(numeric(msg.dx)&&Math.abs(msg.dx)<=12&&msg.dx!==0,'잘못된 이동입니다.');let cost=Math.abs(msg.dx);assert(cost<=p.energy,'이동력이 부족합니다.');let x=clamp(p.x+msg.dx,20,WORLD.width-20);assert(!room.mask.solid(x,p.y+35),'너무 높은 지형입니다.');const ny=room.mask.surfaceBelow(x,p.y+35);assert(ny<0||![12,24,36,48].some(h=>room.mask.solid(x,ny+h)),'지나갈 공간이 없습니다.');assert(!alive(room).some(q=>q.id!==id&&Math.abs(q.x-x)<38),'다른 캐릭터가 있습니다.');p.energy-=cost;p.facing=Math.sign(msg.dx);p.x=x;settle(room);expose(room,p);if(!victory(room)&&p.hp<=0)nextTurn(room,now);return;
  }
  if(msg.type==='skip'){finishAction(room,p,80,now);return;}
  if(msg.type==='item'){
@@ -171,14 +191,19 @@ export function command(room,id,msg,now=Date.now()){
  const weapon=native?WEAPONS[p.character]:{visual:kind,count:1,radius:62,effectDelay:0};
  const radius=weapon.radius*(kind==='special'?85/62:1);
  const multiplier=STATS[p.character][1];
+ // Volleys are traced in impact order against a scratch copy of the mask, so a later
+ // projectile continues into the crater an earlier one opened instead of stopping in mid-air.
+ const sim=weapon.count>1?{...room,mask:room.mask.clone()}:room;
  const shots=Array.from({length:weapon.count},(_,index)=>{
   const offset=(index-(weapon.count-1)/2)*(weapon.spread||0);
-  const shot=trace(room,p,clamp(msg.angle+offset,0,180),msg.power,kind);
+  const shot=trace(sim,p,clamp(msg.angle+offset,0,180),msg.power,kind);
+  if(sim!==room&&shot.hit&&(kind==='normal'||kind==='special'))sim.mask.carve(shot.x,shot.y,radius*.8);
   const startDelay=index*(weapon.interval||0),flightDuration=(shot.points.length-1)*.05/((room.fastShots?1.4:1)*1.2);
   return {...shot,index,startDelay,flightDuration,effectDelay:weapon.effectDelay,impactAt:now+(startDelay+flightDuration+weapon.effectDelay)*1000,resolved:false};
  });
+ for(let k=1;k<shots.length;k++)shots[k].impactAt=Math.max(shots[k].impactAt,shots[k-1].impactAt);// resolve in traced order
  room.lastShot={id:++room.shotNumber,startedAt:now,owner:id,character:p.character,visual:weapon.visual,kind,
-  paths:shots.map(s=>({points:s.points,hit:s.hit,startDelay:s.startDelay,flightDuration:s.flightDuration,effectDelay:s.effectDelay})),radius};
+  craterRadius:radius*.8,paths:shots.map(s=>({points:s.points,hit:s.hit,impact:s.hit?{x:s.x,y:s.y}:null,startDelay:s.startDelay,flightDuration:s.flightDuration,effectDelay:s.effectDelay})),radius};
  room.pending={id,team:p.team,kind,shots,multiplier,radius,count:weapon.count};room.phase='resolving';
  room.resumeAt=Math.max(...shots.map(s=>s.impactAt))+300;
 }
@@ -192,7 +217,7 @@ export function tick(room,now=Date.now()){
   for(const s of shots){
    if(s.resolved||now<(s.impactAt??room.resumeAt))continue;
    s.resolved=true;changed=true;if(!s.hit)continue;impacted=true;
-   if(kind==='teleport'){if(p&&p.hp>0&&s.x>20&&s.x<WORLD.width-20&&!alive(room).some(q=>q.id!==p.id&&Math.abs(q.x-s.x)<38)){p.x=s.x;p.y=ground(room,s.x);}}
+   if(kind==='teleport'){if(p&&p.hp>0&&s.x>20&&s.x<WORLD.width-20&&!alive(room).some(q=>q.id!==p.id&&Math.abs(q.x-s.x)<38)){const y=room.mask.surfaceBelow(s.x,s.y+WORLD.cell);if(y>=0){p.x=s.x;p.y=y;}}}
    else if(kind==='poison'){poisonCloud(room,p||{team},s);}
    else{const radius=room.pending.radius??(kind==='special'?85:62);damage(room,s.x,s.y,radius,(kind==='special'?145:105)*multiplier,s.index??0,room.pending.count??1);crater(room,s.x,s.y,radius*.8);}
   }
